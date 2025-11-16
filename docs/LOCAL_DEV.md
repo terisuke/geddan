@@ -254,25 +254,29 @@ source venv/bin/activate
 uvicorn app.main:app --port 8000  # --reload なし
 ```
 
-## 解析APIの実装状況
+## 解析APIの実装状況（✅ 完了）
 
-現在、解析API（`/api/analyze/{job_id}`）はスタブ実装です。
+**2025-11-16更新**: 解析API（`/api/analyze/{job_id}`）の実装が完了しました！
 
-- **スタブ時の動作**:
-  - エンドポイントは200 OKを返します
-  - `status: "processing"`, `progress: 0` を返します
-  - `current_step` に "not yet implemented" が含まれます
+- **実装済みの機能**:
+  - ✅ フレーム抽出（FFmpeg、1fps）
+  - ✅ 知覚ハッシュ計算（imagehash.phash）
+  - ✅ クラスタリング（ハミング距離 ≤5）
+  - ✅ サムネイル生成（代表フレーム）
+  - ✅ **進捗ポーリング**: Redis に中間ステータス書き込み (0→10→30→60→90→100%)
+  - ✅ Celeryタスクによる非同期処理
+  - ✅ `/outputs/{job_id}/thumbnails/` への静的配信
+
+- **進捗ポーリングの動作**:
+  - ポーリング間隔: 5秒
+  - 進捗ステップ: 0% → 10% → 30% → 60% → 90% → 100%
+  - `current_step` にリアルタイムメッセージ（"Extracting frames...", "Computing hashes..." など）
+  - Redis/Celery が起動している必要があります
 
 - **フロントエンドの表示**:
-  - スタブレスポンスを検知すると、黄色の警告メッセージを表示
-  - 「⚠️ 処理待ち（バックエンド実装待ち）」と表示
-  - ポーリング間隔は5秒、最大リトライ回数は60回（5分間）
-
-- **実装予定**:
-  - 実際の動画解析ロジック（MediaPipe等）
-  - Celeryタスクによる非同期処理
-  - 進捗状況の更新
-  - 解析結果の保存
+  - 進捗バーに `progress` と `current_step` が表示されます
+  - 完了時に `result.clusters[]` が表示されます
+  - Redis/Celery 未設定時は「⚠️ 処理待ち（バックエンド未設定）」と表示
 
 ## Redisについて
 

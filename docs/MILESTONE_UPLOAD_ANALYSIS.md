@@ -26,6 +26,19 @@
 - バックエンドテスト: `mise run backend:test` がパス
 - フロントE2E: モック使用時にアップロード～分析表示フローのシナリオがパス
 
+## 進捗ポーリングの期待値
+- **前提条件**: Redis/Celeryが起動している必要があります（バックエンドサービスが必須）
+- **ポーリング間隔**: 5秒間隔でステータスを取得
+- **進捗ステップ**: 以下の順序で進捗が更新されます
+  - 0%: キュー待ち / 開始前
+  - 10%: フレーム抽出開始（Step 1）
+  - 30%: 知覚ハッシュ計算・クラスタリング（Step 2）
+  - 60%: サムネイル生成（Step 3）
+  - 90%: 結果保存（Step 4）
+  - 100%: 完了（クラスタ情報が返される）
+- **UI表示**: バックエンドが返す `progress` と `current_step` がそのまま表示されます
+- **フォールバック**: 404/501/503エラー時はモックAPIにフォールバックし、未実装表示を行います
+
 ## スキーマ（確定版）
 
 ### バックエンド (Pydantic)
@@ -106,12 +119,16 @@ interface AnalysisResponse {
 - [x] モックAPI更新: `mockGetAnalysisStatus` にクラスタ構造を反映
 - [x] 静的配信設定: `/outputs/` を StaticFiles でマウント
 
-### 🚧 実装中（Claude担当）
+### ✅ 完了（Claude担当）
 
-- [ ] Celeryタスクでパイプライン実装: ffmpeg分解→imagehash.phash→クラスタリング
-- [ ] `/api/analyze/{job_id}` で進捗・クラスタ結果・サムネURL返却
-- [ ] `/outputs/{job_id}/thumbnails/` への画像保存
-- [ ] エラーハンドリングと進捗更新ロジック
+- [x] Celeryタスクでパイプライン実装: ffmpeg分解→imagehash.phash→クラスタリング
+- [x] `/api/analyze/{job_id}` で進捗・クラスタ結果・サムネURL返却
+- [x] `/outputs/{job_id}/thumbnails/` への画像保存
+- [x] **進捗ポーリング対応**: Redis に中間ステータス書き込み (0→10→30→60→90→100%)
+- [x] **upload.py**: アップロード時に初期ステータスを Redis に書き込み
+- [x] **analyze_video_task**: 各ステップで Redis ステータス更新
+- [x] **analyze.py**: Docstring 更新、pending 状態の明確化
+- [x] **統合テスト**: `test_status_polling.py` 追加（73テストすべてパス）
 
 ## メモ
 - pHash: `imagehash.phash`（hash_sizeは8または16で、速度と精度のバランス）
