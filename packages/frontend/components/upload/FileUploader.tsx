@@ -1,12 +1,14 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { uploadVideo } from '@/lib/api';
+import { getUploadRules, type UploadRules } from '@/lib/api/rules';
 import { useAppStore } from '@/store/useAppStore';
 
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
-const ALLOWED_TYPES = ['video/mp4', 'image/gif'];
+// デフォルト値（サーバーから取得できない場合のフォールバック）
+const DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+const DEFAULT_ALLOWED_TYPES = ['video/mp4', 'image/gif'];
 
 interface FileUploaderProps {
   onUploadStart?: () => void;
@@ -22,19 +24,50 @@ export function FileUploader({
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadRules, setUploadRules] = useState<UploadRules | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const { setJobId, setStatus } = useAppStore();
 
+  // サーバーからバリデーションルールを取得
+  useEffect(() => {
+    getUploadRules()
+      .then((rules) => {
+        setUploadRules(rules);
+        // ファイル入力のaccept属性を更新
+        if (fileInputRef.current) {
+          fileInputRef.current.accept = rules.allowed_types.join(',');
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load upload rules:', err);
+        // エラー時はデフォルト値を使用
+        setUploadRules({
+          max_file_size_mb: 100,
+          max_file_size_bytes: DEFAULT_MAX_FILE_SIZE,
+          allowed_types: DEFAULT_ALLOWED_TYPES,
+          allowed_extensions: ['.mp4', '.gif'],
+        });
+      });
+  }, []);
+
   const validateFile = (file: File): string | null => {
+    const rules = uploadRules || {
+      max_file_size_bytes: DEFAULT_MAX_FILE_SIZE,
+      allowed_types: DEFAULT_ALLOWED_TYPES,
+      allowed_extensions: ['.mp4', '.gif'],
+    };
+
     // ファイルタイプチェック
-    if (!ALLOWED_TYPES.includes(file.type)) {
-      return '対応していないファイル形式です。MP4またはGIFをアップロードしてください。';
+    if (!rules.allowed_types.includes(file.type)) {
+      const allowedExtensions = rules.allowed_extensions.join(', ');
+      return `対応していないファイル形式です。${allowedExtensions}をアップロードしてください。`;
     }
 
     // ファイルサイズチェック
-    if (file.size > MAX_FILE_SIZE) {
-      return `ファイルサイズが大きすぎます。最大100MBまでアップロード可能です。`;
+    if (file.size > rules.max_file_size_bytes) {
+      const maxSizeMB = rules.max_file_size_mb || Math.round(rules.max_file_size_bytes / (1024 * 1024));
+      return `ファイルサイズが大きすぎます。最大${maxSizeMB}MBまでアップロード可能です。`;
     }
 
     return null;
@@ -120,6 +153,16 @@ export function FileUploader({
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onClick={handleClick}
+        role="button"
+        tabIndex={0}
+        aria-label="動画ファイルをアップロード"
+        aria-disabled={isUploading}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleClick();
+          }
+        }}
         className={`
           relative border-2 border-dashed rounded-xl p-12
           transition-all cursor-pointer
@@ -134,10 +177,11 @@ export function FileUploader({
         <input
           ref={fileInputRef}
           type="file"
-          accept="video/mp4,image/gif"
+          accept={uploadRules?.allowed_types.join(',') || 'video/mp4,image/gif'}
           onChange={handleFileInput}
           className="hidden"
           disabled={isUploading}
+          aria-label="動画ファイルを選択"
         />
 
         <div className="text-center">
@@ -158,7 +202,9 @@ export function FileUploader({
                 またはクリックしてファイルを選択
               </p>
               <p className="text-sm text-gray-400">
-                MP4またはGIF形式、最大100MB
+                {uploadRules
+                  ? `${uploadRules.allowed_extensions.join(', ')}形式、最大${uploadRules.max_file_size_mb}MB`
+                  : 'MP4またはGIF形式、最大100MB'}
               </p>
             </>
           )}

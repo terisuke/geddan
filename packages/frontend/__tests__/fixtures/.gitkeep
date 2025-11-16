@@ -1,0 +1,4 @@
+# Test fixtures directory
+# Place test video files here for E2E tests
+# Note: Large files should be gitignored
+

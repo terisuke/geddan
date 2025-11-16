@@ -6,9 +6,10 @@ interface ProgressBarProps {
   progress: number; // 0-100
   currentStep?: string;
   etaSeconds?: number;
+  isStub?: boolean; // スタブレスポンスの場合
 }
 
-export function ProgressBar({ progress, currentStep, etaSeconds }: ProgressBarProps) {
+export function ProgressBar({ progress, currentStep, etaSeconds, isStub }: ProgressBarProps) {
   const formatTime = (seconds: number) => {
     if (seconds < 60) {
       return `${Math.round(seconds)}秒`;
@@ -18,12 +19,15 @@ export function ProgressBar({ progress, currentStep, etaSeconds }: ProgressBarPr
     return `${minutes}分${remainingSeconds}秒`;
   };
 
+  // バックエンドが返す値を優先し、0%の間も前向きな文言を表示
+  const displayStep = currentStep || (progress === 0 ? 'キュー待ち中...' : '処理中...');
+
   return (
     <div className="w-full max-w-2xl mx-auto">
       <div className="mb-4">
         <div className="flex justify-between items-center mb-2">
           <span className="text-sm font-medium text-gray-700">
-            {currentStep || '処理中...'}
+            {displayStep}
           </span>
           <span className="text-sm font-semibold text-purple-600">
             {Math.round(progress)}%
@@ -36,7 +40,14 @@ export function ProgressBar({ progress, currentStep, etaSeconds }: ProgressBarPr
         )}
       </div>
 
-      <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+      <div
+        className="w-full bg-gray-200 rounded-full h-4 overflow-hidden"
+        role="progressbar"
+        aria-valuenow={progress}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={`進捗: ${Math.round(progress)}%`}
+      >
         <motion.div
           className="h-full bg-gradient-to-r from-purple-600 to-blue-600 rounded-full"
           initial={{ width: 0 }}

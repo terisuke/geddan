@@ -18,9 +18,12 @@ export async function mockUploadVideo(file: File): Promise<UploadResponse> {
   await sleep(1000);
   return {
     job_id: `mock-${Date.now()}`,
-    task_id: `task-${Date.now()}`,
     status: 'processing',
-    message: 'Analysis started',
+    message: 'Video uploaded successfully. Analysis will begin shortly.',
+    filename: file.name,
+    size: file.size,
+    content_type: file.type || 'application/octet-stream',
+    created_at: new Date().toISOString(),
   };
 }
 
@@ -36,6 +39,13 @@ export async function mockGetAnalysisStatus(
   const progress = Math.min(100, ((Date.now() % 30000) / 300));
   
   if (progress >= 100) {
+    // Generate mock clusters for completed analysis
+    const mockClusters = Array.from({ length: 8 }, (_, i) => ({
+      id: i,
+      size: Math.floor(Math.random() * 15) + 5, // Random size between 5-20
+      thumbnail_url: `/outputs/${jobId}/thumbnails/cluster-${i}.jpg`,
+    }));
+
     return {
       job_id: jobId,
       status: 'completed',
@@ -45,9 +55,14 @@ export async function mockGetAnalysisStatus(
         original_fps: 24,
         duration: 5.0,
         total_frames: 120,
-        unique_count: 12,
+        unique_count: mockClusters.length,
         resolution: '1920x1080',
       },
+      // New structure (preferred)
+      result: {
+        clusters: mockClusters,
+      },
+      // Legacy structure (deprecated, but kept for backward compatibility)
       frame_mapping: {
         '0': 0,
         '1': 1,

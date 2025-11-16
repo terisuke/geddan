@@ -1,0 +1,93 @@
+[tasks."backend:venv"]
+description = "Create local Python venv for backend"
+dir = "packages/backend"
+run = "python3.11 -m venv venv"
+
+[tasks."backend:install"]
+description = "Install backend dependencies into venv"
+dir = "packages/backend"
+depends = ["backend:venv"]
+run = """
+source venv/bin/activate
+# Skip network installs if deps are already present (offline-friendly)
+python - <<'PY'
+import importlib.util, sys
+required = ["fastapi", "uvicorn", "redis", "celery", "magic", "httpx", "pytest"]
+missing = [pkg for pkg in required if importlib.util.find_spec(pkg) is None]
+if missing:
+    print("Missing packages:", ", ".join(missing))
+sys.exit(1 if missing else 0)
+PY
+if [ $? -ne 0 ]; then
+  pip install --upgrade pip
+  pip install -r requirements.txt
+fi
+"""
+
+[tasks."backend:test"]
+description = "Run backend pytest with coverage"
+dir = "packages/backend"
+depends = ["backend:install"]
+run = "source venv/bin/activate && pytest --cov=app tests/"
+
+[tasks."backend:serve"]
+description = "Run FastAPI dev server"
+dir = "packages/backend"
+depends = ["backend:install"]
+run = "source venv/bin/activate && uvicorn app.main:app --reload --port 8000"
+
+[tasks."frontend:install"]
+description = "Install frontend dependencies"
+dir = "packages/frontend"
+run = "npm install"
+
+[tasks."frontend:dev"]
+description = "Run Next.js dev server on :3000"
+dir = "packages/frontend"
+depends = ["frontend:install"]
+run = "npm run dev"
+
+[tasks."frontend:lint"]
+description = "Run frontend lint"
+dir = "packages/frontend"
+depends = ["frontend:install"]
+run = "npm run lint"
+
+[tasks."frontend:test"]
+description = "Run Playwright tests (uses NEXT_PUBLIC_USE_MOCK_API by default)"
+dir = "packages/frontend"
+depends = ["frontend:install"]
+run = "npm run test"
+
+[tasks."frontend:test:api"]
+description = "Run Playwright tests against real API (requires backend + Redis + Celery running)"
+dir = "packages/frontend"
+depends = ["frontend:install"]
+env = { NEXT_PUBLIC_USE_MOCK_API = "false", NEXT_PUBLIC_API_URL = "http://localhost:8000" }
+run = "npm run test:e2e"
+
+[tasks.e2e]
+description = "Run Playwright E2E"
+dir = "packages/frontend"
+depends = ["frontend:install"]
+run = "npm run test:e2e"
+
+[tasks."dev:mock"]
+description = "Frontend dev using mock API (no backend required)"
+dir = "."
+run = "mise run frontend:dev"
+
+[tasks."dev:full"]
+description = "Start backend (no reload) and frontend with real API (requires Redis+Celery running separately)"
+dir = "."
+run = """
+source packages/backend/venv/bin/activate && uvicorn packages.backend.app.main:app --port 8000 &
+P1=$!
+cd packages/frontend && npm run dev &
+P2=$!
+wait $P1 $P2
+"""
+
+[tasks.clean]
+description = "Clean generated upload/output artifacts"
+run = "rm -rf packages/backend/uploads/* packages/backend/outputs/*"

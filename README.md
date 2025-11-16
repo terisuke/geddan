@@ -256,6 +256,10 @@ AIが自動的にユニークなポーズを検出します（通常10-30秒）�
 ## 🧪 テスト
 
 ```bash
+# mise を使った実行（推奨）
+mise run backend:test   # pytest --cov=app
+mise run frontend:test  # Playwright (モックAPI)
+
 # Frontend テスト
 cd packages/frontend
 npm run test
@@ -266,6 +270,25 @@ cd packages/backend
 pytest
 pytest --cov=app tests/
 ```
+
+---
+
+## 🛠 ローカル開発（mise）
+
+```bash
+# 依存セットアップ
+mise run frontend:install
+mise run backend:install
+
+# 開発サーバー
+mise run backend:serve   # http://localhost:8000
+mise run frontend:dev    # http://localhost:3000
+
+# クリーンアップ
+mise run clean
+```
+
+詳細: docs/LOCAL_DEV.md を参照。進行中マイルストーン: 「アップロード→フレーム抽出→pHashクラスタ→サムネ表示」をローカルで完走させる。
 
 ---
 

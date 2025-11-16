@@ -5,10 +5,15 @@ FastAPI application with Celery task queue for video processing
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import redis.asyncio as redis
 import logging
+import os
 from pathlib import Path
+
+# Import routers
+from app.routers import upload, analyze
 
 # Configure logging
 logging.basicConfig(
@@ -31,20 +36,40 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("🚀 Starting DanceFrame API...")
 
+    # Check if Redis is required or optional
+    redis_optional = os.getenv("REDIS_OPTIONAL", "true").lower() in ("true", "1", "yes")
+    debug_mode = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+
+    # In DEBUG mode, Redis is always optional
+    if debug_mode:
+        redis_optional = True
+        logger.info("🐛 DEBUG mode enabled - Redis is optional")
+
     try:
         # Connect to Redis
-        redis_url = "redis://redis:6379/0"  # Docker service name
+        # 環境変数REDIS_URLがあれば使用、なければREDIS_HOST/REDIS_PORTから構築
+        # Docker環境ではREDIS_URL、ローカル開発ではREDIS_HOST/Redisポートを設定可能
+        redis_url = os.getenv("REDIS_URL")
+        if not redis_url:
+            redis_host = os.getenv("REDIS_HOST", "localhost")
+            redis_port = os.getenv("REDIS_PORT", "6379")
+            redis_url = f"redis://{redis_host}:{redis_port}/0"
+
         redis_client = await redis.from_url(
             redis_url,
             encoding="utf-8",
-            decode_responses=True
+            decode_responses=True,
+            socket_connect_timeout=2,  # 2秒でタイムアウト
         )
         await redis_client.ping()
-        logger.info("✅ Connected to Redis")
+        logger.info(f"✅ Connected to Redis at {redis_url}")
     except Exception as e:
-        logger.error(f"❌ Failed to connect to Redis: {e}")
-        # Continue without Redis for local development
-        redis_client = None
+        if redis_optional:
+            logger.warning(f"⚠️  Redis not available (optional in dev mode): {e}")
+            redis_client = None
+        else:
+            logger.error(f"❌ Failed to connect to Redis (required): {e}")
+            raise RuntimeError(f"Redis connection required but failed: {e}")
 
     # Create necessary directories
     for dir_path in ["uploads", "outputs"]:
@@ -80,6 +105,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include routers
+app.include_router(upload.router)
+app.include_router(analyze.router)
+
+# Mount static files for outputs (thumbnails)
+# This allows serving files from /outputs/{job_id}/thumbnails/ via /outputs/...
+outputs_dir = Path("outputs")
+if outputs_dir.exists():
+    app.mount("/outputs", StaticFiles(directory=str(outputs_dir)), name="outputs")
 
 
 @app.get("/")

@@ -1,14 +1,27 @@
 // API Response Types
 export interface UploadResponse {
   job_id: string;
-  task_id?: string;
   status: 'processing';
-  message?: string;
+  message: string;
+  filename: string;
+  size: number; // File size in bytes
+  content_type: string; // MIME type
+  created_at: string; // ISO 8601 datetime string
+}
+
+export interface ClusterInfo {
+  id: number; // Cluster ID (0-indexed)
+  size: number; // Number of frames in this cluster
+  thumbnail_url: string; // URL path to cluster representative thumbnail
+}
+
+export interface AnalysisResult {
+  clusters: ClusterInfo[]; // List of clusters with representative thumbnails
 }
 
 export interface AnalysisResponse {
   job_id: string;
-  status: 'processing' | 'completed' | 'failed';
+  status: 'processing' | 'completed' | 'failed' | 'pending';
   progress: number;
   current_step?: string;
   eta_seconds?: number;
@@ -20,7 +33,8 @@ export interface AnalysisResponse {
     resolution?: string;
   };
   frame_mapping?: Record<string, number>;
-  unique_frames?: UniqueFrame[];
+  unique_frames?: UniqueFrame[]; // Deprecated: use result.clusters instead
+  result?: AnalysisResult; // Analysis result with clusters (preferred)
   error?: string;
 }
 

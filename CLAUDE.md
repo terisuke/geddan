@@ -12,6 +12,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Team Structure**: 2-person development (Claude: Backend Lead, Cursor: Frontend Lead)
 
+**Current priority (backend)**:
+- アップロード済み動画を Celery/Redis 経由で解析: ffmpeg分解→imagehash.phash→クラスタリング→代表フレーム書き出し
+- `/api/analyze/{job_id}` で進捗 + クラスタ + サムネURLを返却（404/501解消）
+- サムネを `/outputs/{job_id}/thumbnails/` に保存し静的配信
+
+**Local dev (mise) shortcuts**:
+- `mise run backend:serve` - Start FastAPI dev server (port 8000)
+- `mise run backend:test` - Run pytest with coverage
+- `mise run frontend:dev` - Start Next.js dev server (port 3000)
+- `mise run frontend:test` - Run Playwright E2E tests (uses mock API)
+- `mise run frontend:test:api` - Run E2E against real API (requires backend)
+- `mise run clean` - Clean uploads/outputs directories
+- `mise run dev:mock` - Frontend only (no backend)
+- `mise run dev:full` - Start both frontend and backend
+
 ---
 
 ## Architecture
@@ -20,8 +35,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 packages/
-├── frontend/     # Next.js 16 + React 19.2 (SPA)
-└── backend/      # FastAPI + Celery (Async API)
+├── frontend/             # Next.js 16 + React 19.2 (SPA)
+│   ├── app/             # App Router pages
+│   ├── components/      # React components (upload, analysis, camera, etc.)
+│   ├── hooks/           # Custom hooks (useMediaPipe, useCamera)
+│   ├── lib/             # Utilities (API client, pose comparison)
+│   ├── store/           # Zustand state (useAppStore)
+│   └── types/           # TypeScript definitions
+└── backend/             # FastAPI + Celery (Async API)
+    ├── app/
+    │   ├── routers/     # API endpoints (upload.py, analyze.py)
+    │   ├── services/    # Business logic (frame_extractor, hash_analyzer)
+    │   ├── tasks/       # Celery tasks (analyze_video, cleanup)
+    │   ├── models/      # Pydantic schemas
+    │   └── utils/       # Validators
+    ├── tests/           # pytest tests
+    ├── uploads/         # Temporary file storage
+    └── outputs/         # Generated outputs (thumbnails, videos)
 ```
 
 ### Key Architectural Decisions
@@ -50,7 +80,29 @@ packages/
 
 ## Development Commands
 
-### Local Development (Recommended for Development)
+### Quick Start with mise (Recommended)
+
+**mise** is a development task runner configured in `.mise.toml`. It handles dependency installation and provides convenient shortcuts:
+
+```bash
+# Backend development
+mise run backend:install  # Creates venv and installs dependencies
+mise run backend:serve    # Starts FastAPI at http://localhost:8000
+mise run backend:test     # Runs pytest with coverage
+
+# Frontend development
+mise run frontend:install # Installs npm dependencies
+mise run frontend:dev     # Starts Next.js at http://localhost:3000
+mise run frontend:test    # Runs Playwright E2E with mock API
+mise run frontend:test:api # Runs E2E against real API
+
+# Utilities
+mise run clean           # Removes uploads/outputs directories
+mise run dev:mock        # Frontend only (no backend needed)
+mise run dev:full        # Both frontend and backend
+```
+
+### Local Development (Manual Setup)
 
 **Frontend**:
 ```bash
@@ -65,26 +117,33 @@ npm run test:e2e     # Playwright E2E tests
 
 **Backend**:
 ```bash
+# Recommended: Use mise (automatic venv creation)
+mise run backend:serve   # Starts FastAPI at http://localhost:8000
+mise run backend:test    # Runs pytest with coverage
+
+# Manual setup (if not using mise)
 cd packages/backend
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# Start Redis (separate terminal)
+# Start Redis (optional in DEBUG mode)
 redis-server
 
-# Start Celery Worker (separate terminal)
+# Start Celery Worker (separate terminal, optional in DEBUG mode)
 celery -A app.celery_worker worker --loglevel=info --concurrency=2
 
-# Start FastAPI
-uvicorn app.main:app --reload --port 8000
+# Start FastAPI with optional Redis
+DEBUG=true REDIS_OPTIONAL=true uvicorn app.main:app --reload --port 8000
 # Swagger UI: http://localhost:8000/docs
 
 # Run tests
 pytest                           # All tests
-pytest tests/test_frame_extractor.py  # Single file
+pytest tests/test_upload.py      # Single file
 pytest --cov=app tests/          # With coverage
 ```
+
+**Note**: In DEBUG mode, Redis is optional. The backend will run without Celery for local development.
 
 ### Docker Development (Recommended for Full System)
 
@@ -134,7 +193,7 @@ const landmarker = await PoseLandmarker.createFromOptions(vision, {
 const results = landmarker.detectForVideo(videoElement, timestamp);
 ```
 
-**Location**: `packages/frontend/src/hooks/useMediaPipe.ts`
+**Location**: `packages/frontend/hooks/useMediaPipe.ts`
 
 ### Pose Similarity Calculation
 
@@ -142,7 +201,7 @@ const results = landmarker.detectForVideo(videoElement, timestamp);
 
 **Threshold**: 85% similarity triggers auto-capture
 
-**Location**: `packages/frontend/src/lib/poseComparison.ts`
+**Location**: `packages/frontend/lib/poseComparison.ts`
 
 **Critical Parameters**:
 - `SCALE_FACTOR = 200` (empirically tuned)
@@ -198,7 +257,7 @@ interface AppStore {
 }
 ```
 
-**Location**: `packages/frontend/src/store/useAppStore.ts`
+**Location**: `packages/frontend/store/useAppStore.ts`
 
 ### Backend (Redis)
 
@@ -268,7 +327,7 @@ TTL: 24 hours (auto-cleanup)
 - FFprobe structure validation (detect malformed files)
 - python-magic for content-based detection
 
-**Location**: `packages/backend/app/middleware/security.py`
+**Location**: `packages/backend/app/utils/validators.py`
 
 **Rate Limiting**: 10 requests/min/IP (slowapi)
 
@@ -328,18 +387,28 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ### Backend (.env)
 ```bash
+# Redis Configuration (optional in DEBUG mode)
 REDIS_URL=redis://localhost:6379/0
+REDIS_HOST=localhost              # Alternative to REDIS_URL
+REDIS_PORT=6379                   # Alternative to REDIS_URL
+REDIS_OPTIONAL=true               # true = app works without Redis in dev
+
+# Celery Configuration
 CELERY_BROKER_URL=redis://localhost:6379/0
 CELERY_RESULT_BACKEND=redis://localhost:6379/0
+
+# Application Configuration
 CORS_ORIGINS=http://localhost:3000
 SECRET_KEY=dev-secret-key
-DEBUG=true
+DEBUG=true                        # true = Redis is always optional
 LOG_LEVEL=INFO
-MAX_UPLOAD_SIZE=104857600  # 100MB
+MAX_UPLOAD_SIZE=104857600         # 100MB
 FILE_RETENTION_HOURS=24
 ```
 
-**Template**: `.env.example` (copy and customize)
+**Template**: `packages/backend/.env.example` (copy and customize)
+
+**Development Mode**: When `DEBUG=true`, Redis is automatically optional. The backend will start without Redis and log a warning instead of failing. This is useful for quick local development without setting up Redis.
 
 ---
 
@@ -431,6 +500,52 @@ Example: feat(frontend): implement camera view component
 
 ---
 
+## Common Development Workflows
+
+### 1. Quick Frontend Development (No Backend)
+```bash
+# Start frontend with mock API (no Redis, no Celery needed)
+mise run frontend:dev
+# or
+cd packages/frontend && npm run dev
+```
+
+### 2. Full Stack Development
+```bash
+# Terminal 1: Backend (with optional Redis)
+DEBUG=true REDIS_OPTIONAL=true mise run backend:serve
+
+# Terminal 2: Frontend
+mise run frontend:dev
+
+# Terminal 3 (optional): Celery worker if testing async tasks
+cd packages/backend
+source venv/bin/activate
+celery -A app.celery_worker worker --loglevel=info
+
+# Terminal 4 (optional): Redis if testing async tasks
+redis-server
+```
+
+### 3. Running Tests
+```bash
+# Backend tests (unit + integration)
+mise run backend:test
+
+# Frontend E2E with mock API
+mise run frontend:test
+
+# Frontend E2E with real API (requires backend running)
+mise run frontend:test:api
+```
+
+### 4. Clean Up Development Artifacts
+```bash
+mise run clean  # Removes uploads/ and outputs/
+```
+
+---
+
 **Last Updated**: 2025-11-16
-**Version**: 2.0
+**Version**: 2.1
 **Maintained by**: Claude (Technical Lead)

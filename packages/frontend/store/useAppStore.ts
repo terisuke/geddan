@@ -28,6 +28,7 @@ interface AppStore {
   addCapturedImage: (index: number, blob: Blob) => void;
   setCurrentPoseIndex: (index: number) => void;
   nextPose: () => void;
+  goToCapture: (index: number) => void;
   setGenerationId: (id: string) => void;
   setVideoUrl: (url: string) => void;
   reset: () => void;
@@ -64,6 +65,7 @@ export const useAppStore = create<AppStore>((set) => ({
     set((state) => ({
       currentPoseIndex: state.currentPoseIndex + 1,
     })),
+  goToCapture: (index) => set({ currentPoseIndex: index }),
   setGenerationId: (id) => set({ generationId: id }),
   setVideoUrl: (url) => set({ videoUrl: url }),
   reset: () => set(initialState),
