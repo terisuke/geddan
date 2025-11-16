@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  # Redis - Message broker and cache
+  redis:
+    image: redis:7.2-alpine
+    container_name: danceframe-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Backend API
+  backend:
+    build:
+      context: ./packages/backend
+      dockerfile: Dockerfile
+    container_name: danceframe-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CORS_ORIGINS=http://localhost:3000
+      - DEBUG=true
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./packages/backend:/app
+      - backend_uploads:/app/uploads
+      - backend_outputs:/app/outputs
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Celery Worker (commented out for now - will enable when tasks are implemented)
+  # celery-worker:
+  #   build:
+  #     context: ./packages/backend
+  #     dockerfile: Dockerfile
+  #   container_name: danceframe-celery
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379/0
+  #     - CELERY_BROKER_URL=redis://redis:6379/0
+  #   volumes:
+  #     - ./packages/backend:/app
+  #     - backend_uploads:/app/uploads
+  #     - backend_outputs:/app/outputs
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   command: celery -A app.celery_worker worker --loglevel=info --concurrency=2
+
+volumes:
+  redis_data:
+    driver: local
+  backend_uploads:
+    driver: local
+  backend_outputs:
+    driver: local
+
+networks:
+  default:
+    name: danceframe-network

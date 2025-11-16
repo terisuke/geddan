@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+env/
+.env/
+
+# Build outputs
+.next/
+dist/
+build/
+*.egg-info/
+.turbo/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+.AppleDouble
+.LSOverride
+
+# Uploads/Outputs (generated content)
+packages/backend/uploads/
+packages/backend/outputs/
+*.mp4
+*.mp3
+*.gif
+*.wav
+
+# Logs
+*.log
+logs/
+celerybeat-schedule
+celerybeat.pid
+redis.rdb
+
+# Testing
+.pytest_cache/
+coverage/
+.coverage
+htmlcov/
+.nyc_output/
+playwright-report/
+test-results/
+
+# TypeScript
+*.tsbuildinfo
+
+# Misc
+.cache/
+tmp/
+temp/
