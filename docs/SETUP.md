@@ -65,13 +65,13 @@ wsl --install -d Ubuntu
 ### Step 1: リポジトリクローン
 
 ```bash
-# HTTPSでクローン
-git clone https://github.com/yourusername/dance-frame.git
-cd dance-frame
+# SSH推奨
+git clone git@github.com:terisuke/geddan.git
+cd geddan
 
-# または SSH
-git clone git@github.com:yourusername/dance-frame.git
-cd dance-frame
+# または HTTPS
+git clone https://github.com/terisuke/geddan.git
+cd geddan
 ```
 
 ### Step 2: 環境変数設定

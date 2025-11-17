@@ -18,10 +18,19 @@
 ## 🌟 特徴
 
 ### 🎨 **手描きアニメーション解析**
-- **自動フレーム抽出**: FFmpegによる高速フレーム分解（デフォルト15fps、最大60fps）
-  - 短尺アニメ（<5秒）: 最大60fpsで抽出し、ポーズ抜けを防止
-  - 長尺動画（>20秒）: 自動で調整（総フレーム数300上限）
+- **自動フレーム抽出**: FFmpegによる高速フレーム分解（環境変数で調整可能）
+  - **FPS設定**: `FRAME_EXTRACT_FPS` （デフォルト60fps、YouTube品質）
+  - **フレーム数上限**: `FRAME_MAX_FRAMES` （デフォルト3600、1分間60fps対応）
+  - **動的FPS調整**: 動画の長さに応じて自動最適化
+    - 短尺動画（~5秒）: 60fpsフル抽出（最高品質）
+    - 中尺動画（~30秒）: 60fps維持
+    - 長尺動画（60秒）: 60fps維持（最大サポート）
+    - 超長尺動画（120秒+）: 30fps程度に自動調整してメモリ保護
+  - **バックグラウンドタスク**: Celeryワーカーが自動抽出・最適化
 - **知覚ハッシュ重複検出**: imagehashで類似フレームを自動グルーピング
+  - **ハミング距離閾値**: `HASH_HAMMING_THRESHOLD` （デフォルト6、60fps動画向けに最適化）
+  - 閾値を上げる（7以上）: より緩く、クラスタ数削減（同じポーズを統合）
+  - 閾値を下げる（5以下）: より厳しく、クラスタ数増加（同じポーズが分かれる）
 - **AI骨格推定**: MediaPipe Pose Landmarkerによる33点の骨格ランドマーク検出
 
 ### 📸 **リアルタイムポーズマッチング**
@@ -157,27 +166,27 @@ AIが自動的にユニークなポーズを検出します（通常10-30秒）�
 
 ### Frontend
 
-| 技術 | バージョン | 用途 |
-|------|-----------|------|
-| **Next.js** | 16.0 | Reactフレームワーク（App Router） |
-| **React** | 19.2 | UIライブラリ（React Compiler対応） |
-| **TypeScript** | 5.3 | 型安全性 |
-| **MediaPipe Tasks Vision** | 0.10.15 | ブラウザベースAI骨格推定 |
-| **Zustand** | 5.0.8 | 軽量状態管理 |
-| **Tailwind CSS** | 3.4 | スタイリング |
-| **Framer Motion** | 11.0 | アニメーション |
+| 技術                       | バージョン   | 用途                        |
+|----------------------------|---------|-----------------------------|
+| **Next.js**                | 16.0    | Reactフレームワーク（App Router）    |
+| **React**                  | 19.2    | UIライブラリ（React Compiler対応） |
+| **TypeScript**             | 5.3     | 型安全性                    |
+| **MediaPipe Tasks Vision** | 0.10.15 | ブラウザベースAI骨格推定           |
+| **Zustand**                | 5.0.8   | 軽量状態管理                |
+| **Tailwind CSS**           | 3.4     | スタイリング                      |
+| **Framer Motion**          | 11.0    | アニメーション                     |
 
 ### Backend
 
-| 技術 | バージョン | 用途 |
-|------|-----------|------|
-| **FastAPI** | 0.115 | 高速Webフレームワーク |
-| **Celery** | 5.4 | バックグラウンドタスク処理 |
-| **Redis** | 7.2 | メッセージブローカー・キャッシュ |
-| **FFmpeg** | 6.1 | 動画処理 |
+| 技術          | バージョン   | 用途             |
+|---------------|---------|------------------|
+| **FastAPI**   | 0.115   | 高速Webフレームワーク   |
+| **Celery**    | 5.4     | バックグラウンドタスク処理  |
+| **Redis**     | 7.2     | メッセージブローカー・キャッシュ |
+| **FFmpeg**    | 6.1     | 動画処理         |
 | **MediaPipe** | 0.10.14 | Python版骨格推定 |
-| **imagehash** | 4.3.1 | 知覚ハッシュ計算 |
-| **OpenCV** | 4.10 | 画像処理 |
+| **imagehash** | 4.3.1   | 知覚ハッシュ計算     |
+| **OpenCV**    | 4.10    | 画像処理         |
 
 ---
 
@@ -263,12 +272,32 @@ pytest --cov=app tests/
 
 ## 🛠 ローカル開発（mise）
 
+### 推奨: スタック一括管理
+
+```bash
+# 全サービス一括起動（Redis + Celery + Backend + Frontend）
+mise run stack:start
+
+# 起動後、自動でサービス状態チェック
+# ✅ Redis is running
+# ✅ Celery worker is running (PID: 12345)
+# ✅ Celery worker responding to ping
+# 📊 video_analysis: 0
+# 📊 video_generation: 0
+# 📝 Celery logs: tail -f /tmp/celery.log
+
+# 全サービス一括停止
+mise run stack:stop
+```
+
+### 個別起動
+
 ```bash
 # 依存セットアップ
 mise run frontend:install
 mise run backend:install
 
-# 開発サーバー
+# 開発サーバー（個別）
 mise run backend:serve   # http://localhost:8000
 mise run frontend:dev    # http://localhost:3000
 
@@ -276,7 +305,33 @@ mise run frontend:dev    # http://localhost:3000
 mise run clean
 ```
 
+### デバッグ確認
+
+```bash
+# Celeryワーカー確認
+ps aux | grep celery
+cat /tmp/celery.pid
+
+# タスクキュー確認（0 = 正常）
+redis-cli llen video_analysis      # 動画解析タスク
+redis-cli llen video_generation    # 動画生成タスク
+
+# Celeryワーカー健全性確認
+cd packages/backend && source venv/bin/activate
+PYTHONPATH=. celery -A app.celery_worker inspect ping
+
+# Celeryログ確認
+tail -f /tmp/celery.log
+```
+
 詳細: `docs/LOCAL_DEV.md` を参照。進行中マイルストーン: 「アップロード→フレーム抽出→pHashクラスタ→サムネ表示」をローカルで完走させる。
+
+## 🎯 次のマイルストーン
+- 骨格推定＋自動撮影（Mediapipe＋類似度判定）
+- ffmpeg で元動画にポーズ画像を重ねる合成
+- クラウドデプロイ手順整備
+
+詳細: `docs/NEXT_MILESTONES.md`
 
 ---
 
@@ -310,12 +365,12 @@ railway up
 
 ## 📈 パフォーマンス
 
-| 指標 | 目標値 | 実測値 |
-|------|--------|--------|
-| フレーム抽出速度 | 1秒あたり30フレーム | 45フレーム |
-| ポーズ推定（ブラウザ） | 30 FPS以上 | 35-40 FPS |
-| 類似度計算 | 16ms以下 | 8-12ms |
-| 動画生成時間 | 10秒の動画を30秒以内 | 22秒 |
+| 指標          | 目標値             | 実測値    |
+|-------------|-------------------|-----------|
+| フレーム抽出速度  | 1秒あたり30フレーム       | 45フレーム    |
+| ポーズ推定（ブラウザ） | 30 FPS以上         | 35-40 FPS |
+| 類似度計算    | 16ms以下           | 8-12ms    |
+| 動画生成時間  | 10秒の動画を30秒以内 | 22秒      |
 
 *測定環境: MacBook Pro M2, Chrome 131*
 
@@ -335,21 +390,43 @@ railway up
 
 バックエンドのフレーム抽出は環境変数で調整可能です：
 
-| 環境変数 | デフォルト値 | 説明 |
-|---------|------------|------|
-| `FRAME_EXTRACT_FPS` | 15.0 | フレーム抽出FPS（1-60の範囲） |
-| MAX_FPS（定数） | 60.0 | 最大抽出FPS |
-| MAX_FRAMES（定数） | 300 | 抽出フレーム数の上限 |
+| 環境変数              | デフォルト値 | 説明                                    |
+|----------------------|---------|---------------------------------------|
+| `FRAME_EXTRACT_FPS`  | 60.0    | フレーム抽出FPS（1-60、YouTube品質）          |
+| `FRAME_MAX_FRAMES`   | 3600    | 最大抽出フレーム数（1分間60fps対応、~1.08GB）  |
+| `HASH_HAMMING_THRESHOLD` | 6   | ハミング距離閾値（高いほど同じポーズを統合、低いほど分離） |
+| MAX_FPS（定数）         | 60.0    | 最大抽出FPS（ハードリミット）                  |
 
-**動的調整の仕組み**:
-- 短尺動画（~5秒）: 60fpsで抽出 → 約300フレーム（ポーズ抜け最小化）
-- 中尺動画（~20秒）: 15fpsで抽出 → 約300フレーム
-- 長尺動画（30秒+）: 自動縮小（例: 30秒 → 10fps）→ MAX_FRAMES=300を維持
+**動的調整の仕組み（デフォルト60fps + 3600フレーム上限）**:
+- 短尺動画（~5秒）: **60fps**で抽出 → 300フレーム（YouTube品質、最高精度）
+- 中尺動画（~30秒）: **60fps**で抽出 → 1800フレーム（高品質維持）
+- 長尺動画（60秒）: **60fps**で抽出 → 3600フレーム（最大サポート、~1.08GB）
+- 超長尺動画（120秒）: **30fps**に自動調整 → 3600フレーム
+
+**メモリと処理時間の調整**:
+- より短い動画で軽量化: `FRAME_MAX_FRAMES=1800` (30秒@60fps, ~540MB)
+- より長い動画対応: `FRAME_MAX_FRAMES=7200` (2分@60fps, ~2.16GB)
+
+**クラスタ数調整（60fps向け）**:
+- デフォルト `HASH_HAMMING_THRESHOLD=6` で適正なクラスタ数（~20個）
+- さらにクラスタをまとめる: `HASH_HAMMING_THRESHOLD=7` (同じポーズをより統合)
+- クラスタを細かく分ける: `HASH_HAMMING_THRESHOLD=5以下` (同じポーズが分かれる)
 
 設定例（`packages/backend/.env`）:
 ```bash
-# 短尺アニメーション向けに高FPS設定
-FRAME_EXTRACT_FPS=30.0
+# デフォルト（1分間60fps、適正なクラスタ数）
+FRAME_EXTRACT_FPS=60.0
+FRAME_MAX_FRAMES=3600
+HASH_HAMMING_THRESHOLD=6
+
+# 軽量モード（30秒60fps対応）
+FRAME_MAX_FRAMES=1800
+
+# 高品質モード（2分間60fps対応）
+FRAME_MAX_FRAMES=7200
+
+# クラスタをさらに統合（同じポーズをより積極的にまとめる）
+HASH_HAMMING_THRESHOLD=7
 ```
 
 ---

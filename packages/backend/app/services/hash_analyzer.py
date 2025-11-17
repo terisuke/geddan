@@ -8,9 +8,10 @@ This helps identify unique poses/keyframes in animation loops.
 import imagehash
 from PIL import Image
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import logging
 from collections import defaultdict
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ class HashAnalyzer:
     frames based on Hamming distance between hashes.
     """
 
-    def __init__(self, hash_size: int = 8, hamming_threshold: int = 5):
+    def __init__(self, hash_size: int = 8, hamming_threshold: Optional[int] = None):
         """
         Initialize HashAnalyzer
 
@@ -32,10 +33,18 @@ class HashAnalyzer:
                        Smaller = faster, less precise
                        Larger = slower, more precise
             hamming_threshold: Maximum Hamming distance to consider frames as similar
-                              Lower = stricter clustering (more clusters)
-                              Higher = looser clustering (fewer clusters)
+                              If None, reads from HASH_HAMMING_THRESHOLD env var (default: 6)
+                              Lower = stricter clustering (more clusters, separates similar poses)
+                              Higher = looser clustering (fewer clusters, merges similar poses)
+                              Recommended: 5-7 (higher for high FPS videos to merge duplicates)
         """
         self.hash_size = hash_size
+
+        # Read hamming threshold from environment variable if not provided
+        if hamming_threshold is None:
+            hamming_threshold = int(os.getenv("HASH_HAMMING_THRESHOLD", "6"))
+            logger.debug(f"Using hamming_threshold from environment: {hamming_threshold}")
+
         self.hamming_threshold = hamming_threshold
 
     def compute_hashes(self, frame_paths: List[Path]) -> Dict[Path, imagehash.ImageHash]:
@@ -188,5 +197,8 @@ class HashAnalyzer:
         return representatives
 
 
-# Create singleton instance
-hash_analyzer = HashAnalyzer(hash_size=8, hamming_threshold=5)
+# Create singleton instance with environment-configured hamming threshold
+# Default: hamming_threshold=6 (configurable via HASH_HAMMING_THRESHOLD environment variable)
+# Higher threshold = looser clustering = fewer clusters, merges similar poses
+# Recommended for 60fps videos to merge duplicate frames into same cluster
+hash_analyzer = HashAnalyzer(hash_size=8)  # Will read hamming_threshold from env

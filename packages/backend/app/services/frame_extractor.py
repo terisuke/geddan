@@ -1,8 +1,11 @@
 """
 Frame extraction service using FFmpeg
 
-Extracts frames from video files at specified intervals (default: 1fps)
-to reduce processing time while maintaining sufficient detail for pose analysis.
+Extracts frames from video files at configurable FPS (default: 15fps from env)
+with dynamic adjustment to prevent resource exhaustion while capturing sufficient
+detail for pose analysis.
+
+Configurable via FRAME_EXTRACT_FPS environment variable.
 """
 
 import subprocess
@@ -19,19 +22,34 @@ class FrameExtractor:
 
     # Safety limits to prevent resource exhaustion
     MAX_DURATION_SECONDS = 300  # 5 minutes max
-    MAX_FRAMES = 300  # Maximum number of frames to extract
-    MAX_FPS = 5.0  # Maximum extraction FPS
+    MAX_FPS = 60.0  # Maximum extraction FPS (allows high-FPS for short animations)
 
-    def __init__(self, fps: float = 1.0):
+    def __init__(self, fps: Optional[float] = None, max_frames: Optional[int] = None):
         """
         Initialize FrameExtractor
 
         Args:
-            fps: Frames per second to extract (default: 1.0)
-                 Lower values = faster processing, fewer frames
-                 Higher values = more frames, better coverage
+            fps: Frames per second to extract
+                 If None, reads from FRAME_EXTRACT_FPS env var (default: 60.0)
+                 Automatically reduced for longer videos to respect FRAME_MAX_FRAMES
+                 High default (60fps) ensures maximum detail for short videos
+            max_frames: Maximum number of frames to extract
+                 If None, reads from FRAME_MAX_FRAMES env var (default: 300)
+                 Dynamic FPS adjustment keeps extracted frames within this limit
         """
+        # Read FPS from environment variable if not provided
+        if fps is None:
+            fps = float(os.getenv("FRAME_EXTRACT_FPS", "60.0"))
+            logger.debug(f"Using FPS from environment: {fps}")
+
+        # Read MAX_FRAMES from environment variable if not provided
+        if max_frames is None:
+            max_frames = int(os.getenv("FRAME_MAX_FRAMES", "3600"))
+            logger.debug(f"Using MAX_FRAMES from environment: {max_frames}")
+
         self.fps = min(fps, self.MAX_FPS)  # Enforce FPS limit
+        self.MAX_FRAMES = max_frames  # Configurable frame limit
+
         if fps > self.MAX_FPS:
             logger.warning(f"FPS {fps} exceeds limit, capped at {self.MAX_FPS}")
 
@@ -81,9 +99,14 @@ class FrameExtractor:
             if estimated_frames > self.MAX_FRAMES:
                 # Adjust FPS to stay within frame limit
                 adjusted_fps = self.MAX_FRAMES / duration
+
+                # Calculate recommended MAX_FRAMES to maintain desired FPS
+                recommended_max_frames = int(duration * extraction_fps)
+
                 logger.warning(
                     f"Estimated {estimated_frames} frames exceeds limit ({self.MAX_FRAMES}). "
-                    f"Reducing FPS from {extraction_fps} to {adjusted_fps:.2f}"
+                    f"Reducing FPS from {extraction_fps:.2f} to {adjusted_fps:.2f}. "
+                    f"To maintain {extraction_fps:.2f}fps, set FRAME_MAX_FRAMES={recommended_max_frames}"
                 )
                 extraction_fps = adjusted_fps
 
@@ -221,5 +244,7 @@ class FrameExtractor:
             raise RuntimeError(f"Failed to parse video metadata: {e}")
 
 
-# Create singleton instance
-frame_extractor = FrameExtractor(fps=1.0)
+# Create singleton instance with environment-configured FPS
+# Default: 15fps (configurable via FRAME_EXTRACT_FPS environment variable)
+# This provides a good balance between processing speed and pose detail
+frame_extractor = FrameExtractor()  # Will read from FRAME_EXTRACT_FPS env var

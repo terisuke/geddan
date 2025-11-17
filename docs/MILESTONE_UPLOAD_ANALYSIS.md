@@ -132,5 +132,8 @@ interface AnalysisResponse {
 
 ## メモ
 - pHash: `imagehash.phash`（hash_sizeは8または16で、速度と精度のバランス）
-- ffmpeg: 既存の依存に基づき、1fpsなど適度に間引いて処理時間を抑制
+- ffmpeg: 環境変数対応（デフォルト15fps、最大60fps）で動的調整
+  - FRAME_EXTRACT_FPS環境変数でFPS設定可能（1-60範囲）
+  - 短尺動画（≤5秒）: 最大60fpsでポーズ抜け防止
+  - 長尺動画（30秒+）: MAX_FRAMES=300を超えないよう自動縮小
 - 進捗更新: ステップごとに`progress`を上げ、クライアントのUI更新をしやすくする

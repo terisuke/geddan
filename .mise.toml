@@ -88,6 +88,161 @@ P2=$!
 wait $P1 $P2
 """
 
+[tasks."redis:start"]
+description = "Start local Redis (daemonize)"
+dir = "."
+run = "redis-server --daemonize yes"
+
+[tasks."redis:stop"]
+description = "Stop local Redis if running"
+dir = "."
+run = "redis-cli shutdown || true"
+
+[tasks."celery:worker"]
+description = "Start Celery worker (detached)"
+dir = "packages/backend"
+depends = ["backend:install"]
+run = """
+source venv/bin/activate
+PYTHONPATH=. celery -A app.celery_worker worker \
+  --loglevel=info \
+  --concurrency=2 \
+  -Q video_analysis,video_generation \
+  --detach \
+  --pidfile=/tmp/celery.pid \
+  --logfile=/tmp/celery.log
+"""
+
+[tasks."stack:start"]
+description = "Start Redis + Celery + Backend + Frontend (real API)"
+dir = "."
+run = """
+# Stop any lingering processes/ports before start
+redis-cli shutdown || true
+pkill -f "celery -A app.celery_worker" || true
+pkill -f "uvicorn.*app.main:app" || true
+pkill -f "next dev" || true
+kill $(lsof -ti:8000) 2>/dev/null || true
+kill $(lsof -ti:3000) 2>/dev/null || true
+
+# Clean up old pidfiles/logfiles
+rm -f /tmp/celery.pid /tmp/celery.log
+
+# Start services
+redis-server --daemonize yes
+pushd packages/backend >/dev/null
+source venv/bin/activate
+# Start Celery worker with pidfile and logfile for reliable process management
+PYTHONPATH=. celery -A app.celery_worker worker \
+  --loglevel=info \
+  --concurrency=2 \
+  -Q video_analysis,video_generation \
+  --detach \
+  --pidfile=/tmp/celery.pid \
+  --logfile=/tmp/celery.log
+uvicorn app.main:app --port 8000 --reload &
+P_BE=$!
+popd >/dev/null
+
+# Wait a moment for Celery to start
+sleep 3
+
+# Verify services are running
+echo "========================================="
+echo "🔍 Service Status Check"
+echo "========================================="
+echo "Redis:"
+redis-cli ping 2>/dev/null && echo "  ✅ Redis is running" || echo "  ❌ Redis is not running"
+echo ""
+echo "Celery Worker:"
+if [ -f /tmp/celery.pid ]; then
+  CELERY_PID=$(cat /tmp/celery.pid)
+  ps -p $CELERY_PID >/dev/null && echo "  ✅ Celery worker is running (PID: $CELERY_PID)" || echo "  ❌ Celery worker failed to start (check /tmp/celery.log)"
+else
+  echo "  ❌ Celery pidfile not found"
+fi
+echo ""
+echo "Celery Worker Health:"
+pushd packages/backend >/dev/null
+source venv/bin/activate
+if PYTHONPATH=. celery -A app.celery_worker inspect ping >/dev/null 2>&1; then
+  echo "  ✅ Celery worker responding to ping"
+else
+  echo "  ❌ Celery worker not responding (trying again...)"
+  sleep 2
+  if PYTHONPATH=. celery -A app.celery_worker inspect ping >/dev/null 2>&1; then
+    echo "  ✅ Celery worker responding to ping (after retry)"
+  else
+    echo "  ⚠️  Celery worker may still be initializing"
+  fi
+fi
+popd >/dev/null
+echo ""
+echo "Task Queues:"
+VIDEO_ANALYSIS_LEN=$(redis-cli llen video_analysis 2>/dev/null || echo "N/A")
+VIDEO_GENERATION_LEN=$(redis-cli llen video_generation 2>/dev/null || echo "N/A")
+echo "  📊 video_analysis: $VIDEO_ANALYSIS_LEN"
+echo "  📊 video_generation: $VIDEO_GENERATION_LEN"
+echo ""
+echo "📝 Celery logs: tail -f /tmp/celery.log"
+echo "========================================="
+
+pushd packages/frontend >/dev/null
+NEXT_PUBLIC_USE_MOCK_API=false NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev &
+P_FE=$!
+popd >/dev/null
+wait $P_BE $P_FE
+"""
+
+[tasks."stack:stop"]
+description = "Stop Redis + Celery + Backend + Frontend started locally"
+dir = "."
+run = """
+echo "========================================="
+echo "🛑 Stopping Services"
+echo "========================================="
+
+# Stop Celery worker using pidfile (reliable)
+if [ -f /tmp/celery.pid ]; then
+  CELERY_PID=$(cat /tmp/celery.pid)
+  echo "Stopping Celery worker (PID: $CELERY_PID)..."
+  kill $CELERY_PID 2>/dev/null && echo "  ✅ Celery worker stopped" || echo "  ⚠️  Celery worker already stopped"
+  rm -f /tmp/celery.pid
+else
+  echo "Celery pidfile not found, using pkill fallback..."
+  pkill -f "celery -A app.celery_worker" && echo "  ✅ Celery worker stopped (pkill)" || echo "  ⚠️  No Celery worker found"
+fi
+
+# Stop Backend (uvicorn)
+echo "Stopping Backend (uvicorn)..."
+pkill -f "uvicorn.*app.main:app" && echo "  ✅ Backend stopped" || echo "  ⚠️  No backend process found"
+
+# Stop Frontend (Next.js)
+echo "Stopping Frontend (Next.js)..."
+pkill -f "next dev" && echo "  ✅ Frontend stopped" || echo "  ⚠️  No frontend process found"
+
+# Clean up task queues (optional - uncomment to clear pending tasks)
+# echo "Cleaning task queues..."
+# redis-cli del video_analysis 2>/dev/null && echo "  ✅ Cleared video_analysis queue" || true
+# redis-cli del video_generation 2>/dev/null && echo "  ✅ Cleared video_generation queue" || true
+
+# Stop Redis
+echo "Stopping Redis..."
+redis-cli shutdown 2>/dev/null && echo "  ✅ Redis stopped" || echo "  ⚠️  Redis already stopped"
+
+# Ensure ports are freed
+echo "Freeing ports..."
+kill $(lsof -ti:8000) 2>/dev/null && echo "  ✅ Port 8000 freed" || echo "  ⚠️  Port 8000 already free"
+kill $(lsof -ti:3000) 2>/dev/null && echo "  ✅ Port 3000 freed" || echo "  ⚠️  Port 3000 already free"
+
+# Clean up log files (optional, comment out if you want to keep logs)
+# rm -f /tmp/celery.log
+
+echo "========================================="
+echo "✅ All services stopped"
+echo "========================================="
+"""
+
 [tasks.clean]
 description = "Clean generated upload/output artifacts"
 run = "rm -rf packages/backend/uploads/* packages/backend/outputs/*"

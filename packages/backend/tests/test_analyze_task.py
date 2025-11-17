@@ -37,9 +37,9 @@ class TestFrameExtractor:
         extractor = FrameExtractor(fps=2.0)
         assert extractor.fps == 2.0
 
-        # Default FPS is now 15.0 (from FRAME_EXTRACT_FPS env var)
+        # Default FPS is now 60.0 (from FRAME_EXTRACT_FPS env var, YouTube standard)
         extractor_default = FrameExtractor()
-        assert extractor_default.fps == 15.0
+        assert extractor_default.fps == 60.0
 
 
 class TestHashAnalyzer:
@@ -120,6 +120,27 @@ class TestHashAnalyzer:
         # Verify all cluster IDs are unique
         cluster_ids = [cid for cid, _, _ in representatives]
         assert len(cluster_ids) == len(set(cluster_ids))
+
+    def test_hamming_threshold_from_environment(self, monkeypatch):
+        """Test that hamming_threshold is read from HASH_HAMMING_THRESHOLD environment variable"""
+        monkeypatch.setenv("HASH_HAMMING_THRESHOLD", "3")
+
+        analyzer = HashAnalyzer()
+        assert analyzer.hamming_threshold == 3
+
+    def test_hamming_threshold_default_without_environment(self, monkeypatch):
+        """Test that default hamming_threshold is 6 when environment variable is not set"""
+        monkeypatch.delenv("HASH_HAMMING_THRESHOLD", raising=False)
+
+        analyzer = HashAnalyzer()
+        assert analyzer.hamming_threshold == 6  # New default for 60fps videos (merges similar poses)
+
+    def test_explicit_hamming_threshold_overrides_environment(self, monkeypatch):
+        """Test that explicit hamming_threshold parameter overrides environment variable"""
+        monkeypatch.setenv("HASH_HAMMING_THRESHOLD", "3")
+
+        analyzer = HashAnalyzer(hamming_threshold=6)
+        assert analyzer.hamming_threshold == 6
 
 
 class TestAnalysisPipeline:
@@ -279,62 +300,57 @@ class TestThumbnailOutput:
         expected_url = f"/outputs/{job_id}/thumbnails/cluster-0.jpg"
         # This URL will be served by StaticFiles(directory="outputs")
     
-    def test_thumbnail_static_files_access(self, client):
+    async def test_thumbnail_static_files_access(self, client):
         """
         Test that thumbnails saved to outputs/{job_id}/thumbnails/ are accessible
         via /outputs/{job_id}/thumbnails/cluster-0.jpg endpoint (StaticFiles mount)
-        
+
         This verifies that the absolute path configuration works correctly
         regardless of uvicorn's working directory.
         """
-        import asyncio
         from app.services.file_service import file_service
         from app.main import BASE_DIR
         from pathlib import Path
         from PIL import Image
-        
+
         # Use the actual file_service instance and BASE_DIR from app.main
         # This ensures we're testing with the same paths the app uses
         job_id = "test-static-files-001"
-        
+
         # Get output directory (should be absolute and match BASE_DIR)
         output_dir = file_service.get_output_directory(job_id)
         assert output_dir.is_absolute(), f"Output directory should be absolute: {output_dir}"
-        
+
         # Verify it's under BASE_DIR/outputs
         expected_base = BASE_DIR / "outputs"
         assert output_dir.parent == expected_base, \
             f"Output directory {output_dir} should be under {expected_base}"
-        
+
         # Create thumbnails directory
         thumbnails_dir = output_dir / "thumbnails"
         thumbnails_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create a test thumbnail image
         test_thumbnail_path = thumbnails_dir / "cluster-0.jpg"
         img = Image.new('RGB', (100, 100), color=(255, 0, 0))
         img.save(test_thumbnail_path)
-        
+
         # Verify thumbnail exists at correct absolute path
         assert test_thumbnail_path.exists(), f"Thumbnail should exist at {test_thumbnail_path}"
         assert test_thumbnail_path.is_absolute()
-        
+
         # Test HTTP access via StaticFiles mount
         # The URL should match the file location relative to BASE_DIR/outputs
         expected_url = f"/outputs/{job_id}/thumbnails/cluster-0.jpg"
-        
-        # Use TestClient to verify the file is accessible
+
+        # Use AsyncClient to verify the file is accessible
         # Note: This requires the app to be running with the actual BASE_DIR/outputs mounted
-        async def test_get():
-            response = await client.get(expected_url)
-            assert response.status_code == 200, \
-                f"Expected 200, got {response.status_code} for {expected_url}"
-            assert response.headers["content-type"].startswith("image/"), \
-                f"Expected image content type, got {response.headers['content-type']}"
-        
-        # Run async test
-        asyncio.run(test_get())
-        
+        response = await client.get(expected_url)
+        assert response.status_code == 200, \
+            f"Expected 200, got {response.status_code} for {expected_url}"
+        assert response.headers["content-type"].startswith("image/"), \
+            f"Expected image content type, got {response.headers['content-type']}"
+
         # Cleanup test file
         test_thumbnail_path.unlink(missing_ok=True)
         thumbnails_dir.rmdir()
@@ -454,8 +470,8 @@ class TestVideoSafetyLimits:
         fps_value = ffmpeg_call[fps_arg_index + 1]
 
         # FPS should be capped at MAX_FPS (60.0)
-        # Note: 10s * 60fps = 600 frames > MAX_FRAMES (300), so it will be auto-adjusted to 30fps
-        assert "fps=30.0" in fps_value  # Adjusted to respect MAX_FRAMES limit
+        # Note: 10s * 60fps = 600 frames < MAX_FRAMES (3600), so it stays at 60fps
+        assert "fps=60.0" in fps_value  # Capped at MAX_FPS, within MAX_FRAMES limit
 
 
 class TestCeleryTaskIntegration:
@@ -521,6 +537,13 @@ class TestCeleryTaskIntegration:
         with patch.object(analyze_video_task, 'update_state'):
             # Execute task synchronously using .run() method
             result = analyze_video_task.run(job_id, str(video_path))
+
+        # Verify frame extraction was called WITHOUT fps parameter
+        # This ensures FRAME_EXTRACT_FPS env var (default 15.0) is used
+        mock_extract.assert_called_once()
+        call_kwargs = mock_extract.call_args.kwargs
+        assert 'fps' not in call_kwargs, \
+            "extract_frames should be called without fps parameter to use configured FPS"
 
         # Verify result structure
         assert "clusters" in result

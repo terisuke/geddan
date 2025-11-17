@@ -30,6 +30,108 @@ mise run clean              # uploads/outputs を掃除
 mise run dev:mock           # モックAPIでフロントのみ起動
 mise run dev:full           # バックエンド（実API）＋フロント同時起動
 mise run frontend:test:api  # 実API向けPlaywright（Redis/Celery/BE起動前提）
+
+# スタック管理（推奨）
+mise run stack:start        # Redis + Celery + Backend + Frontend を一括起動
+mise run stack:stop         # 全サービスを一括停止
+```
+
+## スタック管理（mise run stack:start）
+
+全サービス（Redis + Celery + Backend + Frontend）を一括で起動・停止できます。
+
+```bash
+# 一括起動（推奨）
+mise run stack:start
+
+# 起動後、自動的にサービス状態がチェックされます:
+# ========================================
+# 🔍 Service Status Check
+# ========================================
+# Redis:
+#   ✅ Redis is running
+#
+# Celery Worker:
+#   ✅ Celery worker is running (PID: 12345)
+#
+# Celery Worker Health:
+#   ✅ Celery worker responding to ping
+#
+# Task Queues:
+#   📊 video_analysis: 0
+#   📊 video_generation: 0
+#
+# 📝 Celery logs: tail -f /tmp/celery.log
+# ========================================
+
+# 一括停止
+mise run stack:stop
+```
+
+### デバッグ確認手順
+
+**Celeryワーカーが動いているか確認**:
+```bash
+# 方法1: プロセス確認
+ps aux | grep celery
+
+# 方法2: pidfile確認
+cat /tmp/celery.pid && echo "Celery is running (PID: $(cat /tmp/celery.pid))"
+
+# 方法3: Celeryログ確認（リアルタイム）
+tail -f /tmp/celery.log
+```
+
+**タスクキューの状態確認**:
+```bash
+# キューの長さ確認（0 であればタスクが消化されている）
+redis-cli llen video_analysis      # 動画解析タスクキュー
+redis-cli llen video_generation    # 動画生成タスクキュー
+
+# Celeryワーカーのヘルスチェック
+cd packages/backend
+source venv/bin/activate
+PYTHONPATH=. celery -A app.celery_worker inspect ping
+# → pong が返ればワーカーが正常稼働中
+
+# Redis接続確認
+redis-cli ping
+# → PONG が返ればOK
+```
+
+**Celeryワーカーが起動しない場合**:
+1. `/tmp/celery.log` を確認してエラーを特定:
+   ```bash
+   cat /tmp/celery.log
+   ```
+2. よくあるエラー:
+   - `ImportError`: 依存パッケージ不足 → `mise run backend:install` で再インストール
+   - `Connection refused`: Redis未起動 → `redis-server --daemonize yes` で起動
+   - `ModuleNotFoundError`: PYTHONPATH未設定 → `.mise.toml` で `PYTHONPATH=packages/backend` 設定済み
+
+**タスクがキュー待ちのまま止まる場合**:
+```bash
+# 1. Celeryワーカーが動いているか確認
+ps aux | grep celery
+
+# 2. キューに溜まっているタスク数を確認
+redis-cli llen video_analysis      # 動画解析タスク
+redis-cli llen video_generation    # 動画生成タスク
+# → 0以外ならワーカーが消化していない
+
+# 3. ワーカーが正しいキューを監視しているか確認
+cd packages/backend
+source venv/bin/activate
+PYTHONPATH=. celery -A app.celery_worker inspect active_queues
+# → video_analysis, video_generation が表示されればOK
+# → 表示されない場合は -Q オプション指定忘れ（.mise.toml を確認）
+
+# 4. Celeryログを確認
+tail -n 50 /tmp/celery.log
+
+# 5. ワーカーを再起動
+mise run stack:stop
+mise run stack:start
 ```
 
 ## 2ターミナルで同時起動する例
@@ -71,11 +173,38 @@ redis-cli ping
 ```bash
 cd packages/backend
 source venv/bin/activate
-celery -A app.celery_worker worker --loglevel=info --concurrency=2 --queues=video_analysis,celery
+celery -A app.celery_worker worker --loglevel=info --concurrency=2 --queues=video_analysis,video_generation
 ```
 
-**重要**: `--queues=video_analysis,celery` オプションを指定する必要があります。
-Celeryタスクは `video_analysis` キューにルーティングされるため、ワーカーがこのキューを監視している必要があります。
+**重要**: `--queues=video_analysis,video_generation` オプションを指定する必要があります。
+`tasks.analyze_video` は `video_analysis` キューに、`tasks.generate_video` は `video_generation` キューにルーティングされるため、ワーカーがこれらのキューを監視している必要があります。
+
+**起動確認方法**:
+```bash
+# ワーカープロセスが起動していることを確認
+ps aux | grep celery | grep -v grep
+
+# Celeryワーカーの応答を確認
+celery -A app.celery_worker inspect ping
+# → ワーカーが応答すればOK（複数ワーカーが起動している場合は全て応答）
+
+# Redisキューの長さを確認（0を維持していればタスクが消化されている）
+# 注意: tasks.analyze_video は video_analysis キューにルーティングされる
+redis-cli llen video_analysis
+# → 通常は 0（タスクが正常に消化されている）
+
+# デフォルトの celery キューの長さも確認（任意）
+redis-cli llen celery
+
+# ワーカーログを確認（--logfile オプション使用時）
+tail -f /tmp/celery.log
+```
+
+**期待される結果**:
+- `ps aux | grep celery`: Celeryワーカープロセスが表示される
+- `celery -A app.celery_worker inspect ping`: ワーカーから応答がある
+- `redis-cli llen video_analysis`: 通常は `0`（タスクが正常に消化されている）
+- `/tmp/celery.log`: ワーカー起動メッセージが表示される（`--logfile` オプション使用時）
 
 ### 3. バックエンドを起動
 
@@ -107,10 +236,51 @@ mise run frontend:dev
 
 ### 動作確認
 
+**サービス起動確認**:
+```bash
+# 1. Redisが起動していることを確認
+redis-cli ping
+# → PONG が返ればOK
+
+# 2. Celeryワーカーが起動していることを確認
+ps aux | grep celery | grep -v grep
+# → Celeryワーカープロセスが表示されればOK
+
+# 3. Redisキューの長さを確認（タスクが蓄積していないことを確認）
+# 注意: tasks.analyze_video は video_analysis キューにルーティングされる
+redis-cli llen video_analysis
+# → 通常は 0（タスクが正常に消化されている）
+
+# デフォルトの celery キューの長さも確認（任意）
+redis-cli llen celery
+
+# 4. バックエンドヘルスチェック
+curl http://localhost:8000/health
+# → {"status":"healthy","version":"1.0.0","redis":"connected"} が返ればOK
+
+# 5. フロントエンドが起動していることを確認
+curl http://localhost:3000
+# → HTMLが返ればOK
+```
+
+**アップロード→解析→サムネ表示フロー**:
 1. ブラウザで `http://localhost:3000/upload` にアクセス
 2. 動画ファイルをアップロード
-3. 解析進捗が表示される
-4. 解析完了後、`/capture` ページに自動遷移
+3. 解析進捗が表示される（0% → 10% → 30% → 60% → 90% → 100%）
+4. 解析完了後、サムネイルグリッドが表示される
+5. 「撮影を開始する」ボタンをクリックして `/capture` ページに遷移
+
+**トラブルシューティング**:
+- キュー待ちのまま止まる場合:
+  - `ps aux | grep celery`: ワーカーが起動しているか確認
+  - `celery -A app.celery_worker inspect ping`: ワーカーが応答するか確認
+  - `redis-cli llen video_analysis`: **重要**: `video_analysis`キューにタスクが蓄積していないか確認（0以外の場合はタスクが消化されていない）
+  - `/tmp/celery.log` を確認してエラーログがないか確認（`--logfile` オプション使用時）
+  - ワーカーが正しいキューを監視しているか確認:
+    ```bash
+    # ワーカーの起動コマンドに --queues=video_analysis,video_generation が含まれているか確認
+    ps aux | grep celery | grep -E "video_analysis|video_generation"
+    ```
 
 ## 環境変数のポイント
 
@@ -215,7 +385,7 @@ npm run test:e2e
    ```bash
    cd packages/backend
    source venv/bin/activate
-   celery -A app.celery_worker worker --loglevel=info --concurrency=2 --queues=video_analysis,celery
+   celery -A app.celery_worker worker --loglevel=info --concurrency=2 --queues=video_analysis,video_generation
    ```
 3. バックエンドを起動: `mise run backend:serve`
 4. フロントエンドの`.env`に以下を設定:
@@ -268,9 +438,9 @@ uvicorn app.main:app --port 8000  # --reload なし
 
 - **実装済みの機能**:
   - ✅ **フレーム抽出**（FFmpeg、環境変数対応）
-    - デフォルト: 15fps（FRAME_EXTRACT_FPS環境変数）
-    - 最大: 60fps（短尺アニメ向け）
-    - 自動調整: MAX_FRAMES=300を超える場合、FPSを動的に縮小
+    - **バックグラウンドタスク**: `FRAME_EXTRACT_FPS`（デフォルト15fps、上限60fps）を採用
+    - **自動調整**: `MAX_FRAMES=300` を超える場合、FPSを動的に縮小
+    - **短尺動画対応**: 3秒程度の短尺アニメでも十分なフレーム数を抽出（最大60fps）
   - ✅ 知覚ハッシュ計算（imagehash.phash）
   - ✅ クラスタリング（ハミング距離 ≤5）
   - ✅ サムネイル生成（代表フレーム）

@@ -128,7 +128,7 @@ def analyze_video_task(self, job_id: str, video_path: str) -> Dict:
         )
         update_job_status(job_id, "processing", 0, "Starting video analysis...")
 
-        # Step 1: Extract frames at 1fps
+        # Step 1: Extract frames (using FRAME_EXTRACT_FPS env var, default 15fps)
         step_start = time.time()
         logger.info(f"[{job_id}] Step 1/4: Extracting frames")
         self.update_state(
@@ -137,18 +137,20 @@ def analyze_video_task(self, job_id: str, video_path: str) -> Dict:
                 "job_id": job_id,
                 "status": "processing",
                 "progress": 10,
-                "current_step": "Extracting frames from video (1fps)...",
+                "current_step": "Extracting frames from video...",
             }
         )
-        update_job_status(job_id, "processing", 10, "Extracting frames from video (1fps)...")
+        update_job_status(job_id, "processing", 10, "Extracting frames from video...")
 
         frames_dir = job_dir / "frames"
         frames_dir.mkdir(exist_ok=True)
 
+        # Extract frames using configured FPS (FRAME_EXTRACT_FPS env var, default 15.0)
+        # This respects MAX_FPS (60) and MAX_FRAMES (300) limits with dynamic adjustment
         frame_paths = frame_extractor.extract_frames(
             video_path=video_path,
             output_dir=frames_dir,
-            fps=1.0,  # 1 frame per second
+            # fps parameter omitted - uses frame_extractor's configured fps
         )
 
         step_times["frame_extraction"] = time.time() - step_start
@@ -194,19 +196,21 @@ def analyze_video_task(self, job_id: str, video_path: str) -> Dict:
         )
         update_job_status(job_id, "processing", 60, f"Generating thumbnails ({len(representatives)} clusters)...")
 
-        thumbnails_dir = job_dir / "thumbnails"
-        thumbnails_dir.mkdir(exist_ok=True)
+        # Get output directory for thumbnails (will be served via /outputs/ static files)
+        output_dir = file_service.get_output_directory(job_id)
+        thumbnails_dir = output_dir / "thumbnails"
+        thumbnails_dir.mkdir(parents=True, exist_ok=True)
 
         clusters = []
 
         for cluster_id, representative_path, cluster_size in representatives:
-            # Copy representative frame as thumbnail
+            # Copy representative frame from uploads/{job_id}/frames to outputs/{job_id}/thumbnails
             thumbnail_filename = f"cluster-{cluster_id}.jpg"
             thumbnail_path = thumbnails_dir / thumbnail_filename
 
             shutil.copy2(representative_path, thumbnail_path)
 
-            # Generate URL for frontend
+            # Generate URL for frontend (matches StaticFiles mount at /outputs/)
             thumbnail_url = f"/outputs/{job_id}/thumbnails/{thumbnail_filename}"
 
             clusters.append({
