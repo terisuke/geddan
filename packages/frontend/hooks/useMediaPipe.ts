@@ -85,9 +85,26 @@ export function useMediaPipe(
 
     const video = videoRef.current;
     let lastVideoTime = -1;
+    let isDetecting = true; // 検出ループの実行フラグ
 
     async function detectPose() {
-      if (!video || !landmarkerRef.current) return;
+      if (!isDetecting || !video || !landmarkerRef.current) {
+        // 検出が停止された、またはビデオ/landmarkerが利用できない場合は検出ループを停止
+        return;
+      }
+
+      // ビデオ要素が有効なサイズを持つことを確認（MediaPipeエラーを防ぐ）
+      const videoWidth = video.videoWidth || 0;
+      const videoHeight = video.videoHeight || 0;
+      const isVideoReady = videoWidth > 0 && videoHeight > 0 && video.readyState >= 2; // HAVE_CURRENT_DATA
+
+      if (!isVideoReady) {
+        // ビデオが準備できていない場合は次のフレームを待つ
+        if (isDetecting) {
+          animationFrameId.current = requestAnimationFrame(detectPose);
+        }
+        return;
+      }
 
       const now = performance.now();
 
@@ -97,20 +114,33 @@ export function useMediaPipe(
 
         try {
           const results = landmarkerRef.current.detectForVideo(video, now);
-          options.onResults(results);
+          if (isDetecting) {
+            options.onResults(results);
+          }
         } catch (err) {
-          console.error('Pose detection error:', err);
+          // MediaPipeエラーをログに記録（ただし、ページ遷移による中断エラーは無視）
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          // AbortErrorや中断エラーは正常な動作なので無視
+          if (!errorMessage.includes('AbortError') && !errorMessage.includes('interrupted') && !errorMessage.includes('ROI width and height must be > 0')) {
+            console.error('Pose detection error:', err);
+          }
+          // エラーが発生した場合も検出を停止（無限ループを防ぐ）
+          isDetecting = false;
+          return;
         }
       }
 
       // 次のフレームをリクエスト
-      animationFrameId.current = requestAnimationFrame(detectPose);
+      if (isDetecting) {
+        animationFrameId.current = requestAnimationFrame(detectPose);
+      }
     }
 
     // 検出ループ開始
     detectPose();
 
     return () => {
+      isDetecting = false; // 検出を停止
       if (animationFrameId.current) {
         cancelAnimationFrame(animationFrameId.current);
       }

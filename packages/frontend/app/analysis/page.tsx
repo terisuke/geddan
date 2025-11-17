@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { getAnalysisStatus } from '@/lib/api';
 import { useAppStore } from '@/store/useAppStore';
 import { ProgressBar } from '@/components/analysis/ProgressBar';
+import { AnalysisThumbnailGrid } from '@/components/analysis/AnalysisThumbnailGrid';
 import { API_BASE_URL } from '@/lib/api/config';
 import type { ClusterInfo } from '@/types';
 
@@ -44,6 +45,7 @@ export default function AnalysisPage() {
   const { setStatus, setProgress, setCurrentStep, setUniqueFrames, setFrameMapping } = useAppStore();
   const [error, setError] = useState<string | null>(null);
   const [isBackendNotConfigured, setIsBackendNotConfigured] = useState(false);
+  const [completedClusters, setCompletedClusters] = useState<ClusterInfo[] | null>(null);
   const retryCountRef = useRef(0);
 
   useEffect(() => {
@@ -52,7 +54,7 @@ export default function AnalysisPage() {
       return;
     }
 
-    let pollingInterval: NodeJS.Timeout;
+    let pollingInterval: NodeJS.Timeout | null = null;
     let isMounted = true;
 
     const pollStatus = async () => {
@@ -83,11 +85,21 @@ export default function AnalysisPage() {
         setCurrentStep(response.current_step || null);
 
         if (response.status === 'completed') {
+          // ポーリングを停止してから処理
+          if (pollingInterval) {
+            clearInterval(pollingInterval);
+            pollingInterval = null;
+          }
+
           // 解析完了 - result.clusters[]を優先して使用
           if (response.result?.clusters && response.result.clusters.length > 0) {
             // 新しい形式（クラスタ情報）を使用
-            // クラスタ情報をUniqueFrame形式に変換してstoreに保存
             const clusters: ClusterInfo[] = response.result.clusters;
+            
+            // サムネイル表示用にクラスタ情報を保存
+            setCompletedClusters(clusters);
+            
+            // クラスタ情報をUniqueFrame形式に変換してstoreに保存
             const convertedFrames = clusters.map((cluster) => {
               // サムネイルURLの構築: 相対パスの場合はAPI URLを追加
               let thumbnailUrl = cluster.thumbnail_url;
@@ -108,16 +120,21 @@ export default function AnalysisPage() {
             setFrameMapping({}); // クラスタ形式ではframe_mappingは不要
             setStatus('ready');
             
-            // 撮影ページへ遷移
-            router.push('/capture');
+            // 自動遷移を削除: サムネイル表示ビューに切り替える
           } else if (response.unique_frames && response.frame_mapping) {
             // 後方互換性のため、旧形式もサポート
             setUniqueFrames(response.unique_frames);
             setFrameMapping(response.frame_mapping);
             setStatus('ready');
             
-            // 撮影ページへ遷移
-            router.push('/capture');
+            // 旧形式の場合も自動遷移を削除
+            // ただし、旧形式ではクラスタ情報がないため、ユーザーに確認を求めるか、直接遷移する
+            // ここでは旧形式の場合は直接遷移（後方互換性）
+            setTimeout(() => {
+              if (isMounted) {
+                router.push('/capture');
+              }
+            }, 0);
           } else {
             setError('解析結果が不完全です（クラスタ情報またはフレーム情報がありません）');
           }
@@ -180,6 +197,47 @@ export default function AnalysisPage() {
     );
   }
 
+  // 解析完了時: サムネイル表示ビュー
+  if (completedClusters && completedClusters.length > 0) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 py-12 px-4">
+        <div className="max-w-6xl mx-auto">
+          <div className="bg-white rounded-xl shadow-lg p-8">
+            <div className="text-center mb-8">
+              <div className="text-6xl mb-4">✅</div>
+              <h1 className="text-3xl font-bold text-gray-800 mb-4">
+                解析完了！
+              </h1>
+              <p className="text-gray-600 text-lg mb-2">
+                {completedClusters.length}個のユニークなポーズを検出しました
+              </p>
+              <p className="text-gray-500 text-sm">
+                これらのポーズを撮影して、あなただけの踊ってみた動画を作成しましょう
+              </p>
+            </div>
+
+            <div className="mb-8">
+              <AnalysisThumbnailGrid
+                clusters={completedClusters}
+                thumbnailBaseUrl={API_BASE_URL}
+              />
+            </div>
+
+            <div className="text-center">
+              <button
+                onClick={() => router.push('/capture')}
+                className="px-8 py-4 bg-gradient-to-r from-purple-600 to-blue-600 text-white text-xl font-semibold rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-105"
+              >
+                撮影を開始する →
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 解析中: 進捗表示ビュー
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center p-4">
       <div className="max-w-2xl w-full bg-white rounded-xl shadow-lg p-8">

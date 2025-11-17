@@ -16,6 +16,12 @@ const nextConfig: NextConfig = {
         hostname: 'cdn.jsdelivr.net',
         pathname: '/npm/@mediapipe/**',
       },
+      {
+        protocol: 'http',
+        hostname: 'localhost',
+        port: '8000',
+        pathname: '/outputs/**',
+      },
     ],
   },
   // セキュリティヘッダー

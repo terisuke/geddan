@@ -29,7 +29,16 @@ export function useCamera(options: UseCameraOptions = {}) {
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        try {
+          await videoRef.current.play();
+        } catch (playError) {
+          // ページ遷移などの中断によるエラーは無視（正常な動作）
+          const errorMessage = playError instanceof Error ? playError.message : String(playError);
+          if (!errorMessage.includes('AbortError') && !errorMessage.includes('interrupted')) {
+            // 中断以外のエラーのみ報告
+            console.warn('Video play error:', playError);
+          }
+        }
       }
 
       streamRef.current = stream;
