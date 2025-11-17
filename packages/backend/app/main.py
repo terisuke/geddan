@@ -15,6 +15,10 @@ from pathlib import Path
 # Import routers
 from app.routers import upload, analyze
 
+# Base directory: absolute path to packages/backend
+# This ensures paths are independent of uvicorn's working directory
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -71,10 +75,12 @@ async def lifespan(app: FastAPI):
             logger.error(f"❌ Failed to connect to Redis (required): {e}")
             raise RuntimeError(f"Redis connection required but failed: {e}")
 
-    # Create necessary directories
-    for dir_path in ["uploads", "outputs"]:
-        Path(dir_path).mkdir(exist_ok=True)
-    logger.info("📁 Created upload/output directories")
+    # Create necessary directories (using absolute paths from BASE_DIR)
+    uploads_dir = BASE_DIR / "uploads"
+    outputs_dir = BASE_DIR / "outputs"
+    uploads_dir.mkdir(exist_ok=True)
+    outputs_dir.mkdir(exist_ok=True)
+    logger.info(f"📁 Created upload/output directories: {uploads_dir}, {outputs_dir}")
 
     yield
 
@@ -112,9 +118,10 @@ app.include_router(analyze.router)
 
 # Mount static files for outputs (thumbnails)
 # This allows serving files from /outputs/{job_id}/thumbnails/ via /outputs/...
-outputs_dir = Path("outputs")
-if outputs_dir.exists():
-    app.mount("/outputs", StaticFiles(directory=str(outputs_dir)), name="outputs")
+# Uses absolute path from BASE_DIR to avoid dependency on uvicorn's working directory
+outputs_dir = BASE_DIR / "outputs"
+outputs_dir.mkdir(exist_ok=True)  # Ensure directory exists
+app.mount("/outputs", StaticFiles(directory=str(outputs_dir)), name="outputs")
 
 
 @app.get("/")

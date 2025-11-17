@@ -37,8 +37,9 @@ class TestFrameExtractor:
         extractor = FrameExtractor(fps=2.0)
         assert extractor.fps == 2.0
 
+        # Default FPS is now 15.0 (from FRAME_EXTRACT_FPS env var)
         extractor_default = FrameExtractor()
-        assert extractor_default.fps == 1.0
+        assert extractor_default.fps == 15.0
 
 
 class TestHashAnalyzer:
@@ -232,6 +233,114 @@ class TestErrorHandling:
             extractor.extract_frames(video_path, output_dir)
 
 
+class TestThumbnailOutput:
+    """Test thumbnail generation and output paths"""
+
+    def test_thumbnails_saved_to_outputs_directory(self, tmp_path):
+        """
+        Test that thumbnails are saved to outputs/{job_id}/thumbnails/
+        This ensures they are accessible via /outputs/ StaticFiles mount
+        """
+        from app.services.file_service import FileService
+        from pathlib import Path
+
+        # Create test file service with custom base directories
+        test_uploads = tmp_path / "uploads"
+        test_outputs = tmp_path / "outputs"
+
+        file_service = FileService(
+            base_upload_dir=str(test_uploads),
+            base_output_dir=str(test_outputs)
+        )
+
+        job_id = "test-job-123"
+
+        # Get output directory
+        output_dir = file_service.get_output_directory(job_id)
+
+        # Verify output directory is in outputs/, not uploads/
+        assert output_dir == test_outputs / job_id
+        assert output_dir.exists()
+
+        # Create thumbnails directory
+        thumbnails_dir = output_dir / "thumbnails"
+        thumbnails_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create a test thumbnail
+        test_thumbnail = thumbnails_dir / "cluster-0.jpg"
+        test_thumbnail.write_bytes(b"fake thumbnail data")
+
+        # Verify thumbnail exists at correct path
+        assert test_thumbnail.exists()
+        assert test_thumbnail.parent == thumbnails_dir
+        assert str(test_thumbnail).startswith(str(test_outputs))  # Must be in outputs/, not uploads/
+
+        # Verify URL path would be correct
+        expected_url = f"/outputs/{job_id}/thumbnails/cluster-0.jpg"
+        # This URL will be served by StaticFiles(directory="outputs")
+    
+    def test_thumbnail_static_files_access(self, client):
+        """
+        Test that thumbnails saved to outputs/{job_id}/thumbnails/ are accessible
+        via /outputs/{job_id}/thumbnails/cluster-0.jpg endpoint (StaticFiles mount)
+        
+        This verifies that the absolute path configuration works correctly
+        regardless of uvicorn's working directory.
+        """
+        import asyncio
+        from app.services.file_service import file_service
+        from app.main import BASE_DIR
+        from pathlib import Path
+        from PIL import Image
+        
+        # Use the actual file_service instance and BASE_DIR from app.main
+        # This ensures we're testing with the same paths the app uses
+        job_id = "test-static-files-001"
+        
+        # Get output directory (should be absolute and match BASE_DIR)
+        output_dir = file_service.get_output_directory(job_id)
+        assert output_dir.is_absolute(), f"Output directory should be absolute: {output_dir}"
+        
+        # Verify it's under BASE_DIR/outputs
+        expected_base = BASE_DIR / "outputs"
+        assert output_dir.parent == expected_base, \
+            f"Output directory {output_dir} should be under {expected_base}"
+        
+        # Create thumbnails directory
+        thumbnails_dir = output_dir / "thumbnails"
+        thumbnails_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create a test thumbnail image
+        test_thumbnail_path = thumbnails_dir / "cluster-0.jpg"
+        img = Image.new('RGB', (100, 100), color=(255, 0, 0))
+        img.save(test_thumbnail_path)
+        
+        # Verify thumbnail exists at correct absolute path
+        assert test_thumbnail_path.exists(), f"Thumbnail should exist at {test_thumbnail_path}"
+        assert test_thumbnail_path.is_absolute()
+        
+        # Test HTTP access via StaticFiles mount
+        # The URL should match the file location relative to BASE_DIR/outputs
+        expected_url = f"/outputs/{job_id}/thumbnails/cluster-0.jpg"
+        
+        # Use TestClient to verify the file is accessible
+        # Note: This requires the app to be running with the actual BASE_DIR/outputs mounted
+        async def test_get():
+            response = await client.get(expected_url)
+            assert response.status_code == 200, \
+                f"Expected 200, got {response.status_code} for {expected_url}"
+            assert response.headers["content-type"].startswith("image/"), \
+                f"Expected image content type, got {response.headers['content-type']}"
+        
+        # Run async test
+        asyncio.run(test_get())
+        
+        # Cleanup test file
+        test_thumbnail_path.unlink(missing_ok=True)
+        thumbnails_dir.rmdir()
+        output_dir.rmdir()
+
+
 class TestVideoSafetyLimits:
     """Test safety limits for video processing"""
 
@@ -297,11 +406,12 @@ class TestVideoSafetyLimits:
 
     def test_max_fps_enforcement(self):
         """Test that FPS is capped at MAX_FPS during initialization"""
-        # Test initialization with excessive FPS
-        extractor = FrameExtractor(fps=10.0)
+        # Test initialization with excessive FPS (>60.0)
+        extractor = FrameExtractor(fps=100.0)
 
-        # Should be capped at MAX_FPS (5.0)
+        # Should be capped at MAX_FPS (60.0)
         assert extractor.fps == FrameExtractor.MAX_FPS
+        assert extractor.fps == 60.0
 
     def test_fps_limit_in_extract_frames(self, tmp_path, monkeypatch):
         """Test that FPS parameter in extract_frames is also limited"""
@@ -334,8 +444,8 @@ class TestVideoSafetyLimits:
         output_dir.mkdir(exist_ok=True)
         (output_dir / "frame_0001.jpg").touch()
 
-        # Call with excessive FPS
-        result = extractor.extract_frames(video_path, output_dir, fps=10.0)
+        # Call with high FPS (100.0 > MAX_FPS=60.0)
+        result = extractor.extract_frames(video_path, output_dir, fps=100.0)
 
         # Verify FFmpeg was called with capped FPS
         ffmpeg_call = mock_run.call_args[0][0]
@@ -343,8 +453,9 @@ class TestVideoSafetyLimits:
         fps_arg_index = ffmpeg_call.index("-vf")
         fps_value = ffmpeg_call[fps_arg_index + 1]
 
-        # FPS should be capped at MAX_FPS (5.0)
-        assert "fps=5" in fps_value or "fps=3" in fps_value  # Might be adjusted for MAX_FRAMES too
+        # FPS should be capped at MAX_FPS (60.0)
+        # Note: 10s * 60fps = 600 frames > MAX_FRAMES (300), so it will be auto-adjusted to 30fps
+        assert "fps=30.0" in fps_value  # Adjusted to respect MAX_FRAMES limit
 
 
 class TestCeleryTaskIntegration:
@@ -369,6 +480,14 @@ class TestCeleryTaskIntegration:
         monkeypatch.setattr(
             "app.tasks.analyze_video.file_service.get_job_directory",
             lambda x: job_dir
+        )
+
+        # Mock file_service.get_output_directory for thumbnails
+        output_dir = tmp_path / "outputs" / job_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            "app.tasks.analyze_video.file_service.get_output_directory",
+            lambda x: output_dir
         )
 
         # Create mock frames
@@ -420,8 +539,8 @@ class TestCeleryTaskIntegration:
         assert mock_redis.setex.called
         assert mock_redis.expire.called
 
-        # Verify thumbnails were created
-        thumbnails_dir = job_dir / "thumbnails"
+        # Verify thumbnails were created in outputs directory (not uploads)
+        thumbnails_dir = output_dir / "thumbnails"
         assert thumbnails_dir.exists()
         thumbnail_files = list(thumbnails_dir.glob("cluster-*.jpg"))
         assert len(thumbnail_files) > 0

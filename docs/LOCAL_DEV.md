@@ -71,8 +71,11 @@ redis-cli ping
 ```bash
 cd packages/backend
 source venv/bin/activate
-celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+celery -A app.celery_worker worker --loglevel=info --concurrency=2 --queues=video_analysis,celery
 ```
+
+**重要**: `--queues=video_analysis,celery` オプションを指定する必要があります。
+Celeryタスクは `video_analysis` キューにルーティングされるため、ワーカーがこのキューを監視している必要があります。
 
 ### 3. バックエンドを起動
 
@@ -83,6 +86,8 @@ cd packages/backend
 source venv/bin/activate
 uvicorn app.main:app --reload --port 8000
 ```
+
+**重要**: `uploads` と `outputs` ディレクトリは `app/main.py` の `BASE_DIR` (= `packages/backend`) 直下に作成され、絶対パスで管理されます。これにより、uvicornの起動ディレクトリに依存せず、`/outputs/` で正しく静的配信されます。
 
 ### 4. フロントエンドの環境変数を設定
 
@@ -152,6 +157,7 @@ REDIS_OPTIONAL=false
 - ✅ 静的配信設定: `/outputs/` を StaticFiles でマウント
 - ✅ Celery/Redis連携で解析ジョブ実行（パイプライン実装済み）
 - ✅ `/api/analyze/{job_id}` でクラスタ+サムネURL返却
+- ✅ **フレーム抽出FPS改善**: 環境変数対応（デフォルト15fps、最大60fps、自動調整）
 
 **Frontend (Cursor担当)**:
 - ✅ 型定義更新: `AnalysisResponse` に `result.clusters` 追加
@@ -183,6 +189,8 @@ REDIS_OPTIONAL=false
 **静的ファイル配信**:
 - サムネイルURL: `http://localhost:8000/outputs/{job_id}/thumbnails/cluster-{id}.jpg`
 - FastAPIの `StaticFiles` で `/outputs/` ディレクトリをマウント済み
+- **重要**: 生成物（サムネ・最終動画）は `packages/backend/outputs/{job_id}/` に配置され、`/outputs/` 静的ルートで配信されます
+- **パス管理**: `app/main.py` の `BASE_DIR` (= `packages/backend`) を基準とした絶対パスで管理されるため、uvicornの起動ディレクトリに依存しません
 
 ## E2Eテストの実行
 
@@ -207,7 +215,7 @@ npm run test:e2e
    ```bash
    cd packages/backend
    source venv/bin/activate
-   celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+   celery -A app.celery_worker worker --loglevel=info --concurrency=2 --queues=video_analysis,celery
    ```
 3. バックエンドを起動: `mise run backend:serve`
 4. フロントエンドの`.env`に以下を設定:
@@ -259,7 +267,10 @@ uvicorn app.main:app --port 8000  # --reload なし
 **2025-11-16更新**: 解析API（`/api/analyze/{job_id}`）の実装が完了しました！
 
 - **実装済みの機能**:
-  - ✅ フレーム抽出（FFmpeg、1fps）
+  - ✅ **フレーム抽出**（FFmpeg、環境変数対応）
+    - デフォルト: 15fps（FRAME_EXTRACT_FPS環境変数）
+    - 最大: 60fps（短尺アニメ向け）
+    - 自動調整: MAX_FRAMES=300を超える場合、FPSを動的に縮小
   - ✅ 知覚ハッシュ計算（imagehash.phash）
   - ✅ クラスタリング（ハミング距離 ≤5）
   - ✅ サムネイル生成（代表フレーム）

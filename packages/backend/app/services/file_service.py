@@ -15,19 +15,55 @@ logger = logging.getLogger(__name__)
 class FileService:
     """Service for file storage operations"""
 
-    def __init__(self, base_upload_dir: str = "uploads"):
-        self.base_upload_dir = Path(base_upload_dir)
+    def __init__(self, base_upload_dir: str = None, base_output_dir: str = None):
+        """
+        Initialize FileService with base directories.
+        
+        If not provided, defaults to packages/backend/uploads and packages/backend/outputs
+        using absolute paths from app/main.py BASE_DIR.
+        """
+        from pathlib import Path
+        # Get BASE_DIR from app.main (avoid circular import by using absolute path calculation)
+        # BASE_DIR is packages/backend (parent of app/ directory)
+        # Calculate BASE_DIR: app/services/file_service.py -> app/ -> packages/backend/
+        base_dir = Path(__file__).resolve().parent.parent.parent
+        
+        if base_upload_dir is None:
+            base_upload_dir = str(base_dir / "uploads")
+        if base_output_dir is None:
+            base_output_dir = str(base_dir / "outputs")
+        
+        # Convert to absolute Path to avoid dependency on working directory
+        self.base_upload_dir = Path(base_upload_dir).resolve()
         self.base_upload_dir.mkdir(parents=True, exist_ok=True)
+
+        self.base_output_dir = Path(base_output_dir).resolve()
+        self.base_output_dir.mkdir(parents=True, exist_ok=True)
 
     def generate_job_id(self) -> str:
         """Generate a unique job ID"""
         return str(uuid.uuid4())
 
     def get_job_directory(self, job_id: str) -> Path:
-        """Get the directory path for a job"""
+        """
+        Get the upload directory path for a job
+
+        Used for storing original uploaded files and intermediate processing files.
+        """
         job_dir = self.base_upload_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
         return job_dir
+
+    def get_output_directory(self, job_id: str) -> Path:
+        """
+        Get the output directory path for a job
+
+        Used for storing final outputs (thumbnails, generated videos) that will be
+        served via StaticFiles at /outputs/{job_id}/...
+        """
+        output_dir = self.base_output_dir / job_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
 
     async def save_upload(
         self, file: UploadFile, job_id: str
