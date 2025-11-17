@@ -15,7 +15,7 @@ const MAX_RETRY_COUNT = 60; // 最大リトライ回数（5分間）
  * バックエンド未実装/未設定を検知する関数
  * statusやerrorだけで判定し、実装済みバックエンドからの通常レスポンスと区別
  */
-function isBackendNotConfigured(response: {
+function checkBackendNotConfigured(response: {
   status: string;
   error?: string | null;
   current_step?: string | null;
@@ -75,7 +75,7 @@ export default function AnalysisPage() {
         retryCountRef.current += 1;
 
         // バックエンド未実装/未設定の検知
-        const isNotConfigured = isBackendNotConfigured(response);
+        const isNotConfigured = checkBackendNotConfigured(response);
         setIsBackendNotConfigured(isNotConfigured);
 
         // バックエンドが返す値をそのまま使用（進捗とステップ）
