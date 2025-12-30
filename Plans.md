@@ -53,6 +53,13 @@
 - [x] キャプチャ画像ストア (`useAppStore.ts`) `cc:完了`
 - [x] ターゲット画像からランドマーク抽出 (`extractPoseLandmarks.ts`) `cc:完了`
 
+### 追加改良（バグ修正）
+
+- [x] Gemini APIによるアニメ画像ポーズ抽出 (`geminiPoseService.ts`) `cc:完了`
+- [x] ハイブリッドポーズ検出（Gemini優先→MediaPipeフォールバック） `cc:完了`
+- [x] ポーズ類似度計算の改良（2D比較・体幹正規化） `cc:完了`
+- [x] カメラ準備完了待ち対応 `cc:完了`
+
 ### Backend
 
 - [ ] キャプチャ画像受信API `cc:TODO` (Phase 3で実装予定)
@@ -60,23 +67,32 @@
 
 ---
 
-## 🟢 フェーズ3: 動画生成 `cc:TODO`
+## 🟢 フェーズ3: 動画生成 `cc:WIP`
 
 **目標**: ユーザーキャプチャ画像 → 動画合成 → ダウンロード
 
 ### Backend
 
-- [ ] VideoComposer サービス `cc:TODO`
-- [ ] FFmpeg 動画合成 `cc:TODO`
-- [ ] 音声マージ `cc:TODO`
-- [ ] 生成ステータスAPI `cc:TODO`
-- [ ] ダウンロードAPI `cc:TODO`
+- [x] VideoComposer サービス (`video_composer.py`) `cc:完了`
+- [x] FFmpeg 動画合成 (`compose_video()`) `cc:完了`
+- [x] 音声マージ (`_extract_audio()`) `cc:完了`
+- [x] キャプチャ画像受信API (`/api/generate/{job_id}/capture`) `cc:完了`
+- [x] 生成開始API (`/api/generate/{job_id}/start`) `cc:完了`
+- [x] 生成ステータスAPI (`/api/generate/{job_id}/status`) `cc:完了`
+- [x] Celeryタスク (`generate_video_task`) `cc:完了`
+- [ ] ダウンロードAPI (`/api/download/{job_id}/final.mp4`) `cc:TODO`
 
 ### Frontend
 
-- [ ] レビュー画面 `cc:TODO`
-- [ ] 生成進捗表示 `cc:TODO`
-- [ ] ダウンロードボタン `cc:TODO`
+- [x] レビュー画面 (`app/review/page.tsx`) `cc:完了`
+- [x] サムネイルグリッド (`ThumbnailGrid.tsx`) `cc:完了`
+- [x] 背景除去処理 (`useCaptureProcessor.ts`) `cc:完了`
+- [x] 生成進捗表示 `cc:完了`
+- [ ] ダウンロードボタン改善（新規タブではなく直接DL） `cc:TODO`
+
+### 統合テスト
+
+- [ ] E2Eフロー検証 `cc:TODO`
 
 ---
 
@@ -95,9 +111,17 @@
 現在の優先事項:
 1. ~~フェーズ1の残タスクを完了させる~~ ✅ 完了
 2. ~~フェーズ2: カメラキャプチャ機能~~ ✅ 完了
-3. **フェーズ3: 動画生成に着手**
-   - VideoComposer サービス
-   - FFmpeg 動画合成
-   - 生成ステータスAPI
+3. **フェーズ3: 動画生成** 🟡 ほぼ完了
+   - ~~VideoComposer サービス~~ ✅
+   - ~~FFmpeg 動画合成~~ ✅
+   - ~~生成ステータスAPI~~ ✅
+   - ダウンロードAPI追加
+   - E2Eフロー検証
 
-**次に言うこと**: 「フェーズ3を始めて」または「動画生成を実装して」
+### 残タスク
+
+1. **ダウンロードAPI** - `/api/download/{job_id}/final.mp4` エンドポイント追加
+2. **E2Eフロー検証** - アップロード→解析→キャプチャ→生成→ダウンロードを通しで確認
+3. **generateルーターをmain.pyに登録** - 未登録の場合
+
+**次に言うこと**: 「残りのタスクを完了して」または「E2Eテストして」
