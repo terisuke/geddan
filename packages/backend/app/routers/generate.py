@@ -3,6 +3,7 @@ Router for video generation endpoints
 """
 
 from fastapi import APIRouter, File, UploadFile, HTTPException, BackgroundTasks, Form
+from fastapi.responses import FileResponse
 from typing import List, Optional
 import shutil
 from pathlib import Path
@@ -74,11 +75,32 @@ async def get_generation_status(job_id: str):
     redis_client = get_redis_client()
     if not redis_client:
          return {"status": "unknown", "message": "Redis unavailable"}
-         
+
     key = f"gen:{job_id}:state"
     data = await redis_client.hgetall(key)
-    
+
     if not data:
         return {"status": "pending", "progress": 0}
-        
+
     return data
+
+
+@router.get("/download/{job_id}/final.mp4")
+async def download_final_video(job_id: str):
+    """
+    Download the generated final video
+    """
+    output_dir = file_service.get_output_directory(job_id)
+    video_path = output_dir / "final.mp4"
+
+    if not video_path.exists():
+        raise HTTPException(404, "Video not found. Generation may not be complete.")
+
+    return FileResponse(
+        path=str(video_path),
+        media_type="video/mp4",
+        filename=f"danceframe-{job_id}.mp4",
+        headers={
+            "Content-Disposition": f'attachment; filename="danceframe-{job_id}.mp4"'
+        }
+    )

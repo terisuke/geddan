@@ -1,3 +1,5 @@
+'use client';
+
 import { ThumbnailGrid } from '@/components/review/ThumbnailGrid';
 import { useCaptureProcessor } from '@/hooks/useCaptureProcessor';
 import { useAppStore } from '@/store/useAppStore';
@@ -19,10 +21,23 @@ export default function ReviewPage() {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState({ state: '', percent: 0 });
+  const [isCompleted, setIsCompleted] = useState(false);
 
   const handleRetake = (index: number) => {
     goToCapture(index);
     router.push('/capture');
+  };
+
+  const downloadVideo = () => {
+    if (!jobId) return;
+    // Use the download API endpoint for direct download
+    const downloadUrl = `http://localhost:8000/api/download/${jobId}/final.mp4`;
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = `danceframe-${jobId}.mp4`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const startGeneration = async () => {
@@ -38,6 +53,7 @@ export default function ReviewPage() {
     // 2. Trigger Generation
     try {
       setIsGenerating(true);
+      setIsCompleted(false);
       const res = await fetch(`http://localhost:8000/api/generate/${jobId}/start`, {
         method: 'POST'
       });
@@ -56,9 +72,8 @@ export default function ReviewPage() {
 
           if (statusData.status === 'completed') {
             clearInterval(pollInterval);
-            const videoUrl = `http://localhost:8000${statusData.result_url}`;
-            window.open(videoUrl, '_blank');
             setIsGenerating(false);
+            setIsCompleted(true);
           } else if (statusData.status === 'failed') {
             clearInterval(pollInterval);
             alert("Generation failed: " + statusData.message);
@@ -140,14 +155,33 @@ export default function ReviewPage() {
             Back to Capture
           </button>
 
-          <button
-            onClick={startGeneration}
-            disabled={isRemovingBackground || isGenerating || isProcessing}
-            className="px-8 py-3 bg-blue-600 rounded font-bold hover:bg-blue-500 disabled:opacity-50"
-          >
-            Create Video 🎬
-          </button>
+          <div className="flex gap-4">
+            {isCompleted && (
+              <button
+                onClick={downloadVideo}
+                className="px-8 py-3 bg-green-600 rounded font-bold hover:bg-green-500"
+              >
+                Download Video ⬇️
+              </button>
+            )}
+
+            <button
+              onClick={startGeneration}
+              disabled={isRemovingBackground || isGenerating || isProcessing}
+              className="px-8 py-3 bg-blue-600 rounded font-bold hover:bg-blue-500 disabled:opacity-50"
+            >
+              {isCompleted ? 'Regenerate 🔄' : 'Create Video 🎬'}
+            </button>
+          </div>
         </div>
+
+        {/* Success Message */}
+        {isCompleted && (
+          <div className="mt-8 p-4 bg-green-900/50 border border-green-500 rounded-lg text-center">
+            <p className="text-green-400 font-bold text-lg mb-2">✅ Video Created Successfully!</p>
+            <p className="text-gray-300">Click the Download button to save your video.</p>
+          </div>
+        )}
       </div>
     </div>
   );
