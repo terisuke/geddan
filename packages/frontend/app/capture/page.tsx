@@ -38,6 +38,9 @@ export default function CapturePage() {
   const [timeLeft, setTimeLeft] = useState(WAIT_SECONDS);
   const [countdown, setCountdown] = useState<number | null>(null); // null means not in countdown
 
+  // Camera/MediaPipe ready state
+  const [isCameraReady, setIsCameraReady] = useState(false);
+
   // Camera control ref
   const captureRef = useRef<() => void>(() => {});
 
@@ -174,9 +177,15 @@ export default function CapturePage() {
     }
   }, [isCapturing, currentPoseIndex, uniqueFrames.length, nextPose]);
 
+  // 全ての準備が完了しているかどうか
+  // - カメラとMediaPipeが準備完了
+  // - ターゲットランドマークの抽出が完了（成功・失敗問わず）
+  const isFullyReady = isCameraReady && !isExtractingLandmarks;
+
   // Main Timer Logic
   useEffect(() => {
-    if (isPaused || isCapturing) return;
+    // 準備が完了するまでタイマーを開始しない
+    if (isPaused || isCapturing || !isFullyReady) return;
 
     const timer = setInterval(() => {
       // 1. Initial 10s wait period
@@ -201,18 +210,19 @@ export default function CapturePage() {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isPaused, isCapturing, timeLeft, countdown, triggerCapture]);
+  }, [isPaused, isCapturing, isFullyReady, timeLeft, countdown, triggerCapture]);
 
   // Auto-Shutter Logic - disabled linting as intentional async state update
   useEffect(() => {
-    if (isPaused || isCapturing || countdown !== null) return;
+    // 準備が完了していない場合は自動シャッターを無効化
+    if (isPaused || isCapturing || countdown !== null || !isFullyReady) return;
 
     if (similarity >= SIMILARITY_THRESHOLD) {
       // Intentional: triggerCapture is a user-initiated action triggered by similarity reaching threshold
       // eslint-disable-next-line react-hooks/set-state-in-effect
       triggerCapture();
     }
-  }, [similarity, isPaused, isCapturing, countdown, triggerCapture]);
+  }, [similarity, isPaused, isCapturing, countdown, isFullyReady, triggerCapture]);
 
   const handleCapture = useCallback((blob: Blob) => {
     addCapturedImage(currentPoseIndex, blob);
@@ -245,7 +255,9 @@ export default function CapturePage() {
         </div>
 
         <div className="text-xl font-bold">
-          {countdown !== null ? (
+          {!isFullyReady ? (
+            <span className="text-yellow-400 animate-pulse">準備中...</span>
+          ) : countdown !== null ? (
             <span className="text-red-500 animate-pulse text-4xl">{countdown}</span>
           ) : (
             <span className="text-gray-400">{timeLeft}s</span>
@@ -297,6 +309,7 @@ export default function CapturePage() {
             targetPose={targetPoseWithLandmarks}
             onCapture={handleCapture}
             onSimilarityChange={setSimilarity}
+            onReadyChange={setIsCameraReady}
             captureTriggerRef={captureRef}
             overlayOpacity={0} // No overlay in split mode
           />

@@ -24,6 +24,7 @@ interface CameraViewProps {
   };
   onCapture: (blob: Blob) => void;
   onSimilarityChange?: (similarity: number) => void;
+  onReadyChange?: (isReady: boolean) => void;
   captureTriggerRef?: React.MutableRefObject<() => void>;
   overlayOpacity?: number;
 }
@@ -32,6 +33,7 @@ export function CameraView({
   targetPose,
   onCapture,
   onSimilarityChange,
+  onReadyChange,
   captureTriggerRef,
   overlayOpacity = 0.3,
 }: CameraViewProps) {
@@ -136,6 +138,12 @@ export function CameraView({
       modelComplexity: 1,
     }
   );
+
+  // カメラとMediaPipeの準備状態を親に通知
+  useEffect(() => {
+    const isReady = isActive && isMediaPipeReady;
+    onReadyChange?.(isReady);
+  }, [isActive, isMediaPipeReady, onReadyChange]);
 
   useEffect(() => {
     startCamera();

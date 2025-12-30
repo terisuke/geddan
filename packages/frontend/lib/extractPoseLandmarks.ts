@@ -1,8 +1,11 @@
 /**
  * Extract Pose Landmarks from Image
  *
- * MediaPipe Tasks Vision を使用して、静止画像からポーズランドマークを抽出します。
- * 参照実装: references/posevision-ai/services/poseService.ts
+ * ハイブリッドアプローチ：
+ * 1. Gemini API（アニメ/イラスト画像に対応）を優先
+ * 2. MediaPipe（実写画像に最適）をフォールバック
+ *
+ * 参照実装: references/anime-pose-mimic/services/geminiService.ts
  */
 
 import {
@@ -10,6 +13,11 @@ import {
   PoseLandmarker,
   type NormalizedLandmark,
 } from '@mediapipe/tasks-vision';
+import {
+  analyzeAnimePoseWithGemini,
+  convertGeminiToNormalizedLandmarks,
+  isGeminiAvailable,
+} from './geminiPoseService';
 
 // Singleton PoseLandmarker instance for image processing
 let imageLandmarker: PoseLandmarker | null = null;
@@ -68,15 +76,50 @@ async function getImageLandmarker(): Promise<PoseLandmarker> {
 export interface ExtractedPose {
   landmarks: NormalizedLandmark[];
   worldLandmarks?: NormalizedLandmark[];
+  source: 'gemini' | 'mediapipe';
+  poseDescription?: string;
 }
 
 /**
  * 画像URLからポーズランドマークを抽出
  *
+ * ハイブリッドアプローチ:
+ * 1. Gemini APIが利用可能な場合、Geminiで解析を試みる
+ * 2. Geminiで失敗した場合、MediaPipeにフォールバック
+ *
  * @param imageUrl - 画像のURL（data URL、blob URL、または通常のURL）
  * @returns ランドマーク情報、または検出失敗時はnull
  */
 export async function extractPoseLandmarksFromImage(
+  imageUrl: string
+): Promise<ExtractedPose | null> {
+  // 1. Gemini APIを試す（アニメ/イラスト画像に対応）
+  if (isGeminiAvailable()) {
+    console.log('Attempting pose extraction with Gemini API...');
+    const geminiResult = await analyzeAnimePoseWithGemini(imageUrl);
+
+    if (geminiResult) {
+      console.log('Gemini pose extraction successful:', geminiResult.poseDescription);
+      const landmarks = convertGeminiToNormalizedLandmarks(geminiResult);
+      return {
+        landmarks: landmarks as NormalizedLandmark[],
+        source: 'gemini',
+        poseDescription: geminiResult.poseDescription,
+      };
+    }
+    console.warn('Gemini pose extraction failed, falling back to MediaPipe');
+  } else {
+    console.log('Gemini API not available, using MediaPipe directly');
+  }
+
+  // 2. MediaPipeにフォールバック（実写画像向け）
+  return extractWithMediaPipe(imageUrl);
+}
+
+/**
+ * MediaPipeでポーズ抽出
+ */
+async function extractWithMediaPipe(
   imageUrl: string
 ): Promise<ExtractedPose | null> {
   try {
@@ -89,7 +132,7 @@ export async function extractPoseLandmarksFromImage(
     const result = landmarker.detect(img);
 
     if (!result.landmarks || result.landmarks.length === 0) {
-      console.warn('No pose detected in image:', imageUrl.substring(0, 50));
+      console.warn('MediaPipe: No pose detected in image:', imageUrl.substring(0, 50));
       return null;
     }
 
@@ -98,9 +141,10 @@ export async function extractPoseLandmarksFromImage(
       worldLandmarks: result.worldLandmarks?.[0] as
         | NormalizedLandmark[]
         | undefined,
+      source: 'mediapipe',
     };
   } catch (error) {
-    console.error('Failed to extract pose landmarks:', error);
+    console.error('MediaPipe: Failed to extract pose landmarks:', error);
     return null;
   }
 }
