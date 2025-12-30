@@ -1,14 +1,23 @@
 'use client';
 
 import { CameraView } from '@/components/camera/CameraView';
+import {
+  extractPoseLandmarksFromImage,
+  type ExtractedPose,
+} from '@/lib/extractPoseLandmarks';
 import { useAppStore } from '@/store/useAppStore';
-import { Pause, Play, SkipForward } from 'lucide-react';
+import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
+import { Loader2, Pause, Play, SkipForward } from 'lucide-react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const WAIT_SECONDS = 10;
 const COUNTDOWN_SECONDS = 5;
 const SIMILARITY_THRESHOLD = 70;
+
+// ターゲットポーズのランドマーク抽出結果をキャッシュ
+type LandmarkCache = Map<string, ExtractedPose | null>;
 
 export default function CapturePage() {
   const router = useRouter();
@@ -18,7 +27,7 @@ export default function CapturePage() {
     capturedImages,
     addCapturedImage,
     nextPose,
-    setCurrentPoseIndex
+    setCurrentPoseIndex,
   } = useAppStore();
 
   const [similarity, setSimilarity] = useState(0);
@@ -30,7 +39,14 @@ export default function CapturePage() {
   const [countdown, setCountdown] = useState<number | null>(null); // null means not in countdown
 
   // Camera control ref
-  const captureRef = useRef<() => void>(() => { });
+  const captureRef = useRef<() => void>(() => {});
+
+  // ターゲットポーズのランドマークキャッシュ
+  const landmarkCacheRef = useRef<LandmarkCache>(new Map());
+  const [currentTargetLandmarks, setCurrentTargetLandmarks] = useState<
+    NormalizedLandmark[] | null
+  >(null);
+  const [isExtractingLandmarks, setIsExtractingLandmarks] = useState(false);
 
   // Check if all poses are captured
   useEffect(() => {
@@ -43,6 +59,80 @@ export default function CapturePage() {
       router.push('/review');
     }
   }, [uniqueFrames, currentPoseIndex, router]);
+
+  // 現在のターゲットポーズからランドマークを抽出
+  useEffect(() => {
+    const currentPose = uniqueFrames[currentPoseIndex];
+    if (!currentPose?.thumbnail) return;
+
+    const thumbnailUrl = currentPose.thumbnail;
+    let isMounted = true;
+
+    // キャッシュをチェック（非同期で状態更新）
+    const cachedResult = landmarkCacheRef.current.get(thumbnailUrl);
+    if (landmarkCacheRef.current.has(thumbnailUrl)) {
+      // キャッシュヒット時は次のマイクロタスクで状態更新
+      // これによりsetStateの同期呼び出しを回避
+      Promise.resolve().then(() => {
+        if (isMounted) {
+          setCurrentTargetLandmarks(cachedResult?.landmarks ?? null);
+        }
+      });
+      return () => {
+        isMounted = false;
+      };
+    }
+
+    // ランドマーク抽出（非同期で開始）
+    // setStateを非同期化してエフェクト内の同期呼び出し警告を回避
+    Promise.resolve().then(() => {
+      if (isMounted) {
+        setIsExtractingLandmarks(true);
+      }
+    });
+
+    extractPoseLandmarksFromImage(thumbnailUrl)
+      .then((result) => {
+        if (!isMounted) return;
+        landmarkCacheRef.current.set(thumbnailUrl, result);
+        setCurrentTargetLandmarks(result?.landmarks ?? null);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.error('Failed to extract landmarks:', err);
+        landmarkCacheRef.current.set(thumbnailUrl, null);
+        setCurrentTargetLandmarks(null);
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsExtractingLandmarks(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [uniqueFrames, currentPoseIndex]);
+
+  // ターゲットポーズオブジェクトを生成（メモ化）
+  const targetPoseWithLandmarks = useMemo(() => {
+    const currentPose = uniqueFrames[currentPoseIndex];
+    if (!currentPose) return null;
+
+    return {
+      thumbnail: currentPose.thumbnail,
+      pose_landmarks: {
+        landmarks: currentTargetLandmarks
+          ? currentTargetLandmarks.map((lm) => ({
+              x: lm.x,
+              y: lm.y,
+              z: lm.z,
+              visibility: lm.visibility ?? 1,
+            }))
+          : [],
+      },
+    };
+  }, [uniqueFrames, currentPoseIndex, currentTargetLandmarks]);
 
   // triggerCapture must be defined before the useEffects that use it
   const triggerCapture = useCallback(async () => {
@@ -139,7 +229,7 @@ export default function CapturePage() {
 
   const currentPose = uniqueFrames[currentPoseIndex];
 
-  if (!currentPose) return null;
+  if (!currentPose || !targetPoseWithLandmarks) return null;
 
   return (
     <div className="min-h-screen bg-black text-white p-4 flex flex-col">
@@ -171,20 +261,40 @@ export default function CapturePage() {
       <div className="flex-1 grid grid-cols-2 gap-4 h-full min-h-0">
         {/* Left: Target Pose */}
         <div className="relative bg-gray-900 rounded-2xl overflow-hidden border-2 border-slate-700">
-          <img
+          <Image
             src={currentPose.thumbnail}
             alt="Target Pose"
-            className="w-full h-full object-contain"
+            fill
+            className="object-contain"
+            unoptimized // 外部URLの場合に必要
           />
           <div className="absolute top-4 left-4 bg-black/50 px-3 py-1 rounded text-sm">
             Target
           </div>
+          {/* ランドマーク抽出中の表示 */}
+          {isExtractingLandmarks && (
+            <div className="absolute bottom-4 left-4 bg-black/70 px-3 py-1 rounded text-sm flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              AI分析中...
+            </div>
+          )}
+          {/* ランドマーク検出状態 */}
+          {!isExtractingLandmarks && currentTargetLandmarks && (
+            <div className="absolute bottom-4 left-4 bg-green-600/80 px-3 py-1 rounded text-sm">
+              ポーズ検出OK
+            </div>
+          )}
+          {!isExtractingLandmarks && !currentTargetLandmarks && (
+            <div className="absolute bottom-4 left-4 bg-yellow-600/80 px-3 py-1 rounded text-sm">
+              ポーズ未検出
+            </div>
+          )}
         </div>
 
         {/* Right: Camera Preview */}
         <div className="relative bg-gray-900 rounded-2xl overflow-hidden border-2 border-slate-700">
           <CameraView
-            targetPose={currentPose}
+            targetPose={targetPoseWithLandmarks}
             onCapture={handleCapture}
             onSimilarityChange={setSimilarity}
             captureTriggerRef={captureRef}
@@ -195,8 +305,13 @@ export default function CapturePage() {
           </div>
 
           {/* Similarity Badge */}
-          <div className={`absolute bottom-4 right-4 px-6 py-3 rounded-full text-xl font-bold transition-colors ${similarity >= SIMILARITY_THRESHOLD ? 'bg-green-500 text-white' : 'bg-black/50 text-gray-300'
-            }`}>
+          <div
+            className={`absolute bottom-4 right-4 px-6 py-3 rounded-full text-xl font-bold transition-colors ${
+              similarity >= SIMILARITY_THRESHOLD
+                ? 'bg-green-500 text-white'
+                : 'bg-black/50 text-gray-300'
+            }`}
+          >
             {Math.round(similarity)}%
           </div>
         </div>
@@ -206,8 +321,8 @@ export default function CapturePage() {
       <div className="mt-4 overflow-x-auto pb-2">
         <div className="flex gap-2 min-w-max px-2">
           {uniqueFrames.map((frame, idx) => (
-            <div
-              key={idx}
+            <button
+              key={frame.id || idx}
               onClick={() => {
                 setCurrentPoseIndex(idx);
                 setSimilarity(0);
@@ -215,17 +330,27 @@ export default function CapturePage() {
                 setCountdown(null);
                 setIsPaused(true); // Pause when manually selecting
               }}
-              className={`relative w-16 h-16 rounded overflow-hidden cursor-pointer border-2 transition-all ${idx === currentPoseIndex ? 'border-blue-500 scale-110 z-10' :
-                  capturedImages[idx] ? 'border-green-500 opacity-50' : 'border-gray-700 opacity-50'
-                }`}
+              className={`relative w-16 h-16 rounded overflow-hidden cursor-pointer border-2 transition-all ${
+                idx === currentPoseIndex
+                  ? 'border-blue-500 scale-110 z-10'
+                  : capturedImages[idx]
+                    ? 'border-green-500 opacity-50'
+                    : 'border-gray-700 opacity-50'
+              }`}
             >
-              <img src={frame.thumbnail} className="w-full h-full object-cover" />
+              <Image
+                src={frame.thumbnail}
+                alt={`Pose ${idx + 1}`}
+                fill
+                className="object-cover"
+                unoptimized
+              />
               {capturedImages[idx] && (
                 <div className="absolute inset-0 bg-green-500/30 flex items-center justify-center text-xs font-bold">
                   ✓
                 </div>
               )}
-            </div>
+            </button>
           ))}
         </div>
       </div>

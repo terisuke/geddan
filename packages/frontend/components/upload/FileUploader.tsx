@@ -55,27 +55,32 @@ export function FileUploader({
       });
   }, []);
 
-  const validateFile = (file: File): string | null => {
-    const rules = uploadRules || {
-      max_file_size_bytes: DEFAULT_MAX_FILE_SIZE,
-      allowed_types: DEFAULT_ALLOWED_TYPES,
-      allowed_extensions: ['.mp4', '.gif'],
-    };
+  const validateFile = useCallback(
+    (file: File): string | null => {
+      const rules = uploadRules || {
+        max_file_size_bytes: DEFAULT_MAX_FILE_SIZE,
+        allowed_types: DEFAULT_ALLOWED_TYPES,
+        allowed_extensions: ['.mp4', '.gif'],
+      };
 
-    // ファイルタイプチェック
-    if (!rules.allowed_types.includes(file.type)) {
-      const allowedExtensions = rules.allowed_extensions.join(', ');
-      return `対応していないファイル形式です。${allowedExtensions}をアップロードしてください。`;
-    }
+      // ファイルタイプチェック
+      if (!rules.allowed_types.includes(file.type)) {
+        const allowedExtensions = rules.allowed_extensions.join(', ');
+        return `対応していないファイル形式です。${allowedExtensions}をアップロードしてください。`;
+      }
 
-    // ファイルサイズチェック
-    if (file.size > rules.max_file_size_bytes) {
-      const maxSizeMB = rules.max_file_size_mb || Math.round(rules.max_file_size_bytes / (1024 * 1024));
-      return `ファイルサイズが大きすぎます。最大${maxSizeMB}MBまでアップロード可能です。`;
-    }
+      // ファイルサイズチェック
+      if (file.size > rules.max_file_size_bytes) {
+        const maxSizeMB =
+          rules.max_file_size_mb ||
+          Math.round(rules.max_file_size_bytes / (1024 * 1024));
+        return `ファイルサイズが大きすぎます。最大${maxSizeMB}MBまでアップロード可能です。`;
+      }
 
-    return null;
-  };
+      return null;
+    },
+    [uploadRules]
+  );
 
   const handleFile = useCallback(
     async (file: File) => {
@@ -131,7 +136,7 @@ export function FileUploader({
         setRetryInfo(null);
       }
     },
-    [onUploadStart, onUploadComplete, onError, router, setJobId, setStatus, handleError, showWarning, showSuccess]
+    [onUploadStart, onUploadComplete, onError, router, setJobId, setStatus, handleError, showWarning, showSuccess, validateFile]
   );
 
   const handleDrop = useCallback(

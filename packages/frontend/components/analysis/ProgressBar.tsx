@@ -9,7 +9,14 @@ interface ProgressBarProps {
   isStub?: boolean; // スタブレスポンスの場合
 }
 
-export function ProgressBar({ progress, currentStep, etaSeconds, isStub }: ProgressBarProps) {
+export function ProgressBar({
+  progress,
+  currentStep,
+  etaSeconds,
+  isStub: _isStub,
+}: ProgressBarProps) {
+  // isStubは将来的にスタブモード表示に使用予定
+  void _isStub;
   const formatTime = (seconds: number) => {
     if (seconds < 60) {
       return `${Math.round(seconds)}秒`;

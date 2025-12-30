@@ -10,8 +10,9 @@ export function useCaptureProcessor() {
     capturedImages,
     setRemovingBackground,
     setRemovalProgress,
-    setGenerationId,
-    setStatus
+    // 将来的にジェネレーション機能で使用予定
+    // setGenerationId,
+    // setStatus,
   } = useAppStore();
 
   const [isProcessing, setIsProcessing] = useState(false);

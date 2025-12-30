@@ -15,7 +15,7 @@ export default function ReviewPage() {
     removalProgress,
   } = useAppStore();
 
-  const { processAndUploadCaptures, isProcessing: isUploading, error: uploadError } = useCaptureProcessor();
+  const { processAndUploadCaptures, isProcessing, error: uploadError } = useCaptureProcessor();
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState({ state: '', percent: 0 });
@@ -69,7 +69,7 @@ export default function ReviewPage() {
         }
       }, 1000);
 
-    } catch (e) {
+    } catch {
       alert("Generation initialization failed");
       setIsGenerating(false);
     }
@@ -89,21 +89,36 @@ export default function ReviewPage() {
         <h1 className="text-3xl font-bold text-center mb-8">Review Captures</h1>
 
         {/* Status Overlay */}
-        {(isRemovingBackground || isGenerating) && (
+        {(isRemovingBackground || isGenerating || isProcessing) && (
           <div className="fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center">
             <div className="w-64">
               <div className="mb-2 flex justify-between text-sm">
-                <span>{isRemovingBackground ? "Removing Backgrounds..." : "Generating Video..."}</span>
-                <span>{isRemovingBackground ? removalProgress : generationProgress.percent}%</span>
+                <span>
+                  {isProcessing
+                    ? 'Processing Images...'
+                    : isRemovingBackground
+                      ? 'Removing Backgrounds...'
+                      : 'Generating Video...'}
+                </span>
+                <span>
+                  {isRemovingBackground
+                    ? removalProgress
+                    : generationProgress.percent}
+                  %
+                </span>
               </div>
               <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-blue-500 transition-all duration-300"
-                  style={{ width: `${isRemovingBackground ? removalProgress : generationProgress.percent}%` }}
+                  style={{
+                    width: `${isRemovingBackground ? removalProgress : generationProgress.percent}%`,
+                  }}
                 />
               </div>
               <p className="mt-4 text-center text-gray-400 text-sm">
-                {isGenerating && generationProgress.state !== 'processing' && generationProgress.state}
+                {isGenerating &&
+                  generationProgress.state !== 'processing' &&
+                  generationProgress.state}
               </p>
             </div>
           </div>
@@ -127,7 +142,7 @@ export default function ReviewPage() {
 
           <button
             onClick={startGeneration}
-            disabled={isRemovingBackground || isGenerating}
+            disabled={isRemovingBackground || isGenerating || isProcessing}
             className="px-8 py-3 bg-blue-600 rounded font-bold hover:bg-blue-500 disabled:opacity-50"
           >
             Create Video 🎬

@@ -40,22 +40,23 @@
 
 ---
 
-## 🟡 フェーズ2: カメラキャプチャ機能 `cc:TODO`
+## 🟢 フェーズ2: カメラキャプチャ機能 `cc:完了`
 
 **目標**: MediaPipe でリアルタイムポーズ検出 → 類似度マッチング → 自動キャプチャ
 
 ### Frontend
 
-- [ ] MediaPipe Tasks Vision 統合 (`useMediaPipe.ts`) `cc:TODO`
-- [ ] カメラビューコンポーネント (`CameraView.tsx`) `cc:TODO`
-- [ ] ポーズ類似度計算 (`poseComparison.ts`) `cc:TODO`
-- [ ] 自動キャプチャ（85%閾値） `cc:TODO`
-- [ ] キャプチャ画像ストア (`useAppStore.ts`) `cc:TODO`
+- [x] MediaPipe Tasks Vision 統合 (`useMediaPipe.ts`) `cc:完了`
+- [x] カメラビューコンポーネント (`CameraView.tsx`) `cc:完了`
+- [x] ポーズ類似度計算 (`poseComparison.ts`) `cc:完了`
+- [x] 自動キャプチャ（70%閾値） `cc:完了`
+- [x] キャプチャ画像ストア (`useAppStore.ts`) `cc:完了`
+- [x] ターゲット画像からランドマーク抽出 (`extractPoseLandmarks.ts`) `cc:完了`
 
 ### Backend
 
-- [ ] キャプチャ画像受信API `cc:TODO`
-- [ ] ポーズマッピング保存 `cc:TODO`
+- [ ] キャプチャ画像受信API `cc:TODO` (Phase 3で実装予定)
+- [ ] ポーズマッピング保存 `cc:TODO` (Phase 3で実装予定)
 
 ---
 
@@ -93,9 +94,10 @@
 
 現在の優先事項:
 1. ~~フェーズ1の残タスクを完了させる~~ ✅ 完了
-2. **フェーズ2: カメラキャプチャ機能に着手**
-   - MediaPipe Tasks Vision 統合
-   - カメラビューコンポーネント
-   - ポーズ類似度計算
+2. ~~フェーズ2: カメラキャプチャ機能~~ ✅ 完了
+3. **フェーズ3: 動画生成に着手**
+   - VideoComposer サービス
+   - FFmpeg 動画合成
+   - 生成ステータスAPI
 
-**次に言うこと**: 「フェーズ2を始めて」または「カメラ機能を実装して」
+**次に言うこと**: 「フェーズ3を始めて」または「動画生成を実装して」

@@ -3,8 +3,12 @@
 import { useCamera } from '@/hooks/useCamera';
 import { useMediaPipe } from '@/hooks/useMediaPipe';
 import { calculatePoseSimilarity } from '@/lib/poseComparison';
-import type { NormalizedLandmark, PoseLandmarkerResult } from '@mediapipe/tasks-vision';
-import { useEffect, useRef, useState } from 'react';
+import type {
+  NormalizedLandmark,
+  PoseLandmarkerResult,
+} from '@mediapipe/tasks-vision';
+import Image from 'next/image';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface CameraViewProps {
   targetPose: {
@@ -29,13 +33,21 @@ export function CameraView({
   onCapture,
   onSimilarityChange,
   captureTriggerRef,
-  overlayOpacity = 0.3
+  overlayOpacity = 0.3,
 }: CameraViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [similarity, setSimilarity] = useState(0);
+  const [hasTargetLandmarks, setHasTargetLandmarks] = useState(false);
 
   const { videoRef, isActive, error: cameraError, startCamera, stopCamera } =
     useCamera({ facingMode: 'user' });
+
+  // ターゲットランドマークの有無をチェック
+  useEffect(() => {
+    const hasLandmarks =
+      targetPose?.pose_landmarks?.landmarks &&
+      targetPose.pose_landmarks.landmarks.length > 0;
+    setHasTargetLandmarks(hasLandmarks);
+  }, [targetPose]);
 
   const captureFrame = async () => {
     if (!canvasRef.current || !videoRef.current) return;
@@ -74,37 +86,48 @@ export function CameraView({
     if (captureTriggerRef) {
       captureTriggerRef.current = captureFrame;
     }
+    // captureFrameはuseCallback化していないため、依存配列から除外
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [captureTriggerRef]);
 
-  const handleResults = (results: PoseLandmarkerResult) => {
-    if (!results.landmarks || results.landmarks.length === 0) {
-      setSimilarity(0);
-      onSimilarityChange?.(0);
-      return;
-    }
+  const handleResults = useCallback(
+    (results: PoseLandmarkerResult) => {
+      // カメラからポーズが検出されない場合
+      if (!results.landmarks || results.landmarks.length === 0) {
+        onSimilarityChange?.(0);
+        return;
+      }
 
-    // Mirror landmarks if using user-facing camera (optional, depends on MediaPipe config)
-    // For now assuming MediaPipe returns normalized coords consistent with image
+      // ターゲットランドマークがない場合は類似度計算をスキップ
+      if (
+        !targetPose?.pose_landmarks?.landmarks ||
+        targetPose.pose_landmarks.landmarks.length === 0
+      ) {
+        // ポーズは検出されているが比較対象がない
+        onSimilarityChange?.(0);
+        return;
+      }
 
-    const currentLandmarks = results.landmarks[0] as NormalizedLandmark[];
-    const targetLandmarks = targetPose.pose_landmarks.landmarks.map(
-      (lm) =>
-        ({
-          x: lm.x,
-          y: lm.y,
-          z: lm.z,
-          visibility: lm.visibility,
-        }) as NormalizedLandmark
-    );
+      const currentLandmarks = results.landmarks[0] as NormalizedLandmark[];
+      const targetLandmarks = targetPose.pose_landmarks.landmarks.map(
+        (lm) =>
+          ({
+            x: lm.x,
+            y: lm.y,
+            z: lm.z,
+            visibility: lm.visibility,
+          }) as NormalizedLandmark
+      );
 
-    const { similarity: sim } = calculatePoseSimilarity(
-      targetLandmarks,
-      currentLandmarks
-    );
+      const { similarity: sim } = calculatePoseSimilarity(
+        targetLandmarks,
+        currentLandmarks
+      );
 
-    setSimilarity(sim);
-    onSimilarityChange?.(sim);
-  };
+      onSimilarityChange?.(sim);
+    },
+    [targetPose, onSimilarityChange]
+  );
 
   const { isReady: isMediaPipeReady, error: mediaPipeError } = useMediaPipe(
     videoRef,
@@ -162,11 +185,20 @@ export function CameraView({
           className="absolute inset-0 pointer-events-none transition-opacity duration-300"
           style={{ opacity: overlayOpacity }}
         >
-          <img
+          <Image
             src={targetPose.thumbnail}
             alt="Target pose"
-            className="w-full h-full object-cover"
+            fill
+            className="object-cover"
+            unoptimized
           />
+        </div>
+      )}
+
+      {/* ランドマーク未検出の警告 */}
+      {!hasTargetLandmarks && isActive && isMediaPipeReady && (
+        <div className="absolute top-4 right-4 bg-yellow-600/90 px-3 py-1 rounded text-sm">
+          比較準備中...
         </div>
       )}
 
