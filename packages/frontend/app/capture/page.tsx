@@ -156,10 +156,13 @@ export default function CapturePage() {
       }, 100);
     });
 
-    // Sound
-    try {
-      new Audio('/sounds/shutter.mp3').play().catch(() => { });
-    } catch { }
+    // Sound - only play if audio element can be created successfully
+    // Shutter sound is optional; if missing, capture still works silently
+    if (typeof Audio !== 'undefined') {
+      const audio = new Audio('/sounds/shutter.mp3');
+      audio.volume = 0.3;
+      audio.play().catch(() => { /* Ignore audio playback errors */ });
+    }
 
     // Capture frame via ref
     captureRef.current();

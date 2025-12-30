@@ -69,6 +69,10 @@ class CacheHeaderMiddleware(BaseHTTPMiddleware):
             # Add ETag based on path (file-based ETag would be better but requires reading file)
             etag = hashlib.md5(path.encode()).hexdigest()[:16]
             response.headers["ETag"] = f'"{etag}"'
+            # Add CORS headers for static files (Canvas/img crossOrigin needs this)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "*"
 
         # Health check - no cache
         elif path == "/health":

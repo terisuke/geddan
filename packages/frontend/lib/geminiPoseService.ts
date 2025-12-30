@@ -300,25 +300,63 @@ export function convertGeminiToNormalizedLandmarks(
 
 /**
  * 画像URLをBase64に変換
+ * Canvas経由で変換することでCORS問題を回避
  */
 async function imageUrlToBase64(url: string): Promise<string | null> {
   try {
-    // data URLの場合
+    // data URLの場合は直接返す
     if (url.startsWith('data:')) {
       return url.split(',')[1] || null;
     }
 
-    // 通常のURLの場合はfetchして変換
-    const response = await fetch(url);
-    const blob = await response.blob();
+    // blob URLの場合はfetchで取得
+    if (url.startsWith('blob:')) {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64 = reader.result as string;
+          resolve(base64.split(',')[1] || null);
+        };
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    // 通常のURL（http/https）の場合はCanvas経由で変換
+    // これによりCORS問題を回避できる（crossOrigin設定付き）
     return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64 = reader.result as string;
-        resolve(base64.split(',')[1] || null);
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(null);
+            return;
+          }
+          ctx.drawImage(img, 0, 0);
+          // toDataURLでBase64に変換
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+          resolve(dataUrl.split(',')[1] || null);
+        } catch {
+          // Canvas taintedエラーの場合はnullを返す
+          console.warn('Canvas tainted, cannot convert image to base64');
+          resolve(null);
+        }
       };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
+
+      img.onerror = () => {
+        console.warn('Failed to load image for base64 conversion:', url.substring(0, 50));
+        resolve(null);
+      };
+
+      img.src = url;
     });
   } catch (error) {
     console.error('Failed to convert image to base64:', error);
