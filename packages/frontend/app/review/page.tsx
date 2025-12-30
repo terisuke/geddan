@@ -4,7 +4,7 @@ import { ThumbnailGrid } from '@/components/review/ThumbnailGrid';
 import { useCaptureProcessor } from '@/hooks/useCaptureProcessor';
 import { useAppStore } from '@/store/useAppStore';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export default function ReviewPage() {
   const router = useRouter();
@@ -22,6 +22,13 @@ export default function ReviewPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState({ state: '', percent: 0 });
   const [isCompleted, setIsCompleted] = useState(false);
+
+  // Redirect to upload if no data (consistent with CapturePage behavior)
+  useEffect(() => {
+    if (uniqueFrames.length === 0) {
+      router.push('/upload');
+    }
+  }, [uniqueFrames.length, router]);
 
   const handleRetake = (index: number) => {
     goToCapture(index);
