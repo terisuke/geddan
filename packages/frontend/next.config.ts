@@ -4,6 +4,14 @@ const nextConfig: NextConfig = {
   // React Compiler (Next.js 16+)
   reactCompiler: true,
 
+  // Turbopack configuration (Next.js 16+ default bundler)
+  // Empty config silences the webpack/turbopack conflict warning
+  // Turbopack handles chunk splitting automatically
+  turbopack: {},
+
+  // Server-side external packages (replaces webpack externals for SSR)
+  serverExternalPackages: ['@mediapipe/tasks-vision'],
+
   // Image optimization
   images: {
     remotePatterns: [
@@ -41,12 +49,10 @@ const nextConfig: NextConfig = {
   },
 
   // Webpack configuration for bundle optimization
+  // Note: Only used when running with --webpack flag (Turbopack is default in Next.js 16)
   webpack: (config, { isServer }) => {
-    // Externalize MediaPipe in SSR to reduce server bundle
-    if (isServer) {
-      config.externals = config.externals || [];
-      config.externals.push('@mediapipe/tasks-vision');
-    }
+    // SSR externalization is now handled by serverExternalPackages above
+    // This section is kept for webpack fallback compatibility
 
     // Optimize chunk splitting
     if (!isServer) {
