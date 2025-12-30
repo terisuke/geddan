@@ -78,13 +78,22 @@ dir = "."
 run = "mise run frontend:dev"
 
 [tasks."dev:full"]
-description = "Start backend (no reload) and frontend with real API (requires Redis+Celery running separately)"
+description = "Start backend and frontend (simple mode - requires Redis+Celery running separately, or use DEBUG=true)"
 dir = "."
 run = """
-source packages/backend/venv/bin/activate && uvicorn packages.backend.app.main:app --port 8000 &
+# Backend (in correct directory for module resolution)
+pushd packages/backend >/dev/null
+source venv/bin/activate
+DEBUG=true REDIS_OPTIONAL=true uvicorn app.main:app --reload --port 8000 &
 P1=$!
-cd packages/frontend && npm run dev &
+popd >/dev/null
+
+# Frontend
+pushd packages/frontend >/dev/null
+NEXT_PUBLIC_USE_MOCK_API=false NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev &
 P2=$!
+popd >/dev/null
+
 wait $P1 $P2
 """
 
