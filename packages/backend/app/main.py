@@ -1,16 +1,26 @@
 """
 DanceFrame Backend API
-FastAPI application with Celery task queue for video processing
+FastAPI application with Celery task queue for video processing.
+
+Performance optimizations:
+- GZip compression for API responses
+- ETag support for static files
+- Cache headers for thumbnails and static assets
+- Connection keep-alive optimization
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 import redis.asyncio as redis
 import logging
 import os
+import hashlib
 from pathlib import Path
+from typing import Callable
 
 # Import routers
 from app.routers import upload, analyze, generate
@@ -28,6 +38,69 @@ logger = logging.getLogger(__name__)
 
 # Global Redis client
 redis_client = None
+
+# Performance configuration
+GZIP_MINIMUM_SIZE = int(os.getenv("GZIP_MINIMUM_SIZE", "1000"))  # bytes
+STATIC_CACHE_MAX_AGE = int(os.getenv("STATIC_CACHE_MAX_AGE", "3600"))  # 1 hour
+API_CACHE_MAX_AGE = int(os.getenv("API_CACHE_MAX_AGE", "0"))  # No cache for API by default
+
+
+class CacheHeaderMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to add appropriate cache headers to responses.
+
+    - Static files (thumbnails, videos): Long cache with ETag
+    - API responses: No-store or short cache
+    - Health endpoints: No cache
+    """
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        """Process request and add cache headers."""
+        response = await call_next(request)
+        path = request.url.path
+
+        # Static files (outputs directory)
+        if path.startswith("/outputs/"):
+            # Thumbnails and generated videos can be cached
+            if any(path.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".gif"]):
+                response.headers["Cache-Control"] = f"public, max-age={STATIC_CACHE_MAX_AGE}"
+            elif path.endswith(".mp4"):
+                response.headers["Cache-Control"] = f"public, max-age={STATIC_CACHE_MAX_AGE}"
+            # Add ETag based on path (file-based ETag would be better but requires reading file)
+            etag = hashlib.md5(path.encode()).hexdigest()[:16]
+            response.headers["ETag"] = f'"{etag}"'
+
+        # Health check - no cache
+        elif path == "/health":
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+
+        # API endpoints
+        elif path.startswith("/api/"):
+            # Analysis status can be briefly cached to reduce polling load
+            if "/analyze/" in path and request.method == "GET":
+                # 2-second cache for polling endpoints
+                response.headers["Cache-Control"] = "private, max-age=2"
+            else:
+                # No cache for other API endpoints
+                response.headers["Cache-Control"] = "no-store"
+
+        return response
+
+
+class SecurityHeaderMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to add security headers to all responses.
+    """
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        """Process request and add security headers."""
+        response = await call_next(request)
+
+        # Security headers
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+
+        return response
 
 
 @asynccontextmanager
@@ -100,13 +173,23 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+# GZip compression middleware (order matters - should be early in chain)
+app.add_middleware(GZipMiddleware, minimum_size=GZIP_MINIMUM_SIZE)
+
+# Security headers middleware
+app.add_middleware(SecurityHeaderMiddleware)
+
+# Cache headers middleware
+app.add_middleware(CacheHeaderMiddleware)
+
 # CORS Configuration
+cors_origins = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:3001"
+).split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

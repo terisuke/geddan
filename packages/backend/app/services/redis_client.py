@@ -1,18 +1,21 @@
 """
-Redis client with connection retry logic and optimized settings
+Redis client with connection retry logic and optimized settings.
 
 Features:
 - Exponential backoff retry (max 3 attempts)
 - Connection pooling with configurable limits
 - Socket timeout settings
 - Comprehensive error logging
+- Pipeline support for batch operations
+- Optional caching layer for frequently accessed data
 """
 
 import logging
 import os
 import time
 from functools import wraps
-from typing import Optional, Callable, TypeVar, Any
+from typing import Optional, Callable, TypeVar, Any, List, Dict
+from contextlib import contextmanager
 
 import redis
 from redis.exceptions import ConnectionError, TimeoutError, RedisError
@@ -28,8 +31,13 @@ DEFAULT_BASE_DELAY = 0.5  # 500ms
 DEFAULT_MAX_DELAY = 4.0   # 4 seconds
 DEFAULT_SOCKET_TIMEOUT = 5.0  # 5 seconds
 DEFAULT_SOCKET_CONNECT_TIMEOUT = 3.0  # 3 seconds
-DEFAULT_POOL_MAX_CONNECTIONS = 10
+DEFAULT_POOL_MAX_CONNECTIONS = 20  # Increased from 10 for better concurrency
 DEFAULT_HEALTH_CHECK_INTERVAL = 30  # seconds
+
+# Cache configuration
+ENABLE_LOCAL_CACHE = os.getenv("REDIS_LOCAL_CACHE", "true").lower() == "true"
+LOCAL_CACHE_TTL = int(os.getenv("REDIS_LOCAL_CACHE_TTL", "60"))  # seconds
+LOCAL_CACHE_MAX_SIZE = int(os.getenv("REDIS_LOCAL_CACHE_SIZE", "1000"))  # items
 
 
 class RedisClientConfig:
@@ -406,10 +414,284 @@ def execute_redis_operation(
 
 def check_redis_health() -> bool:
     """
-    Check if Redis is healthy and responsive
+    Check if Redis is healthy and responsive.
 
     Returns:
-        True if Redis is available and responding to ping
+        True if Redis is available and responding to ping.
     """
     manager = get_redis_manager()
     return manager.is_healthy()
+
+
+# ============================================================================
+# Pipeline and Batch Operations
+# ============================================================================
+
+
+class RedisPipeline:
+    """
+    Context manager for Redis pipeline operations.
+
+    Pipelines batch multiple Redis commands into a single network round trip,
+    significantly improving performance for bulk operations.
+
+    Example:
+        with RedisPipeline() as pipe:
+            pipe.set("key1", "value1")
+            pipe.set("key2", "value2")
+            pipe.hset("hash", mapping={"a": "1", "b": "2"})
+            results = pipe.execute()
+    """
+
+    def __init__(self, transaction: bool = False):
+        """
+        Initialize pipeline context.
+
+        Args:
+            transaction: If True, execute commands atomically (MULTI/EXEC).
+        """
+        self.transaction = transaction
+        self._pipe: Optional[redis.client.Pipeline] = None
+        self._client: Optional[redis.Redis] = None
+
+    def __enter__(self) -> Optional[redis.client.Pipeline]:
+        """Enter pipeline context."""
+        self._client = get_redis_client()
+        if self._client is None:
+            logger.warning("Redis not available, pipeline operations will be skipped")
+            return None
+
+        self._pipe = self._client.pipeline(transaction=self.transaction)
+        return self._pipe
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit pipeline context."""
+        # Pipeline cleanup is automatic
+        self._pipe = None
+        return False  # Don't suppress exceptions
+
+
+@contextmanager
+def redis_pipeline(transaction: bool = False):
+    """
+    Context manager for Redis pipeline operations.
+
+    Args:
+        transaction: If True, execute commands atomically.
+
+    Yields:
+        Redis pipeline object or None if Redis unavailable.
+
+    Example:
+        with redis_pipeline() as pipe:
+            if pipe:
+                pipe.set("key1", "value1")
+                pipe.set("key2", "value2")
+                results = pipe.execute()
+    """
+    client = get_redis_client()
+    if client is None:
+        logger.warning("Redis not available, pipeline operations will be skipped")
+        yield None
+        return
+
+    pipe = client.pipeline(transaction=transaction)
+    try:
+        yield pipe
+    finally:
+        # Ensure any pending commands are executed
+        pass
+
+
+def execute_batch_operations(
+    operations: List[Callable[[redis.client.Pipeline], None]],
+    operation_name: str = "batch_operation",
+) -> Optional[List[Any]]:
+    """
+    Execute multiple Redis operations in a single pipeline.
+
+    Args:
+        operations: List of callables that add commands to a pipeline.
+        operation_name: Name for logging.
+
+    Returns:
+        List of results from pipeline.execute(), or None on failure.
+
+    Example:
+        results = execute_batch_operations([
+            lambda p: p.set("key1", "value1"),
+            lambda p: p.get("key2"),
+            lambda p: p.hgetall("hash"),
+        ], "update_job_status")
+    """
+    client = get_redis_client()
+    if client is None:
+        logger.warning(f"Redis not available, cannot execute {operation_name}")
+        return None
+
+    try:
+        with client.pipeline(transaction=False) as pipe:
+            for op in operations:
+                op(pipe)
+            return pipe.execute()
+    except RedisError as e:
+        logger.error(f"Redis {operation_name} failed: {e}")
+        return None
+
+
+# ============================================================================
+# Local Cache Layer
+# ============================================================================
+
+
+class LocalCache:
+    """
+    Simple in-memory cache with TTL for reducing Redis round trips.
+
+    Used for frequently accessed, slowly changing data like job status.
+    Thread-safe using simple dict operations (Python GIL).
+    """
+
+    def __init__(
+        self,
+        max_size: int = LOCAL_CACHE_MAX_SIZE,
+        default_ttl: int = LOCAL_CACHE_TTL,
+    ):
+        """
+        Initialize local cache.
+
+        Args:
+            max_size: Maximum number of cached items.
+            default_ttl: Default time-to-live in seconds.
+        """
+        self._cache: Dict[str, tuple] = {}  # key -> (value, expiry_time)
+        self._max_size = max_size
+        self._default_ttl = default_ttl
+        self._enabled = ENABLE_LOCAL_CACHE
+
+    def get(self, key: str) -> Optional[Any]:
+        """
+        Get value from cache if exists and not expired.
+
+        Args:
+            key: Cache key.
+
+        Returns:
+            Cached value or None if not found/expired.
+        """
+        if not self._enabled:
+            return None
+
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+
+        value, expiry = entry
+        if time.time() > expiry:
+            # Expired, remove from cache
+            self._cache.pop(key, None)
+            return None
+
+        return value
+
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """
+        Store value in cache with TTL.
+
+        Args:
+            key: Cache key.
+            value: Value to cache.
+            ttl: Time-to-live in seconds (uses default if not specified).
+        """
+        if not self._enabled:
+            return
+
+        # Simple LRU: remove oldest entries if at capacity
+        if len(self._cache) >= self._max_size:
+            # Remove ~10% of entries (oldest by expiry)
+            entries = sorted(self._cache.items(), key=lambda x: x[1][1])
+            for k, _ in entries[: self._max_size // 10]:
+                self._cache.pop(k, None)
+
+        expiry = time.time() + (ttl if ttl is not None else self._default_ttl)
+        self._cache[key] = (value, expiry)
+
+    def delete(self, key: str) -> None:
+        """Remove key from cache."""
+        self._cache.pop(key, None)
+
+    def clear(self) -> None:
+        """Clear all cached entries."""
+        self._cache.clear()
+
+    def invalidate_pattern(self, pattern: str) -> int:
+        """
+        Invalidate all keys matching pattern (simple prefix match).
+
+        Args:
+            pattern: Key prefix to match.
+
+        Returns:
+            Number of invalidated entries.
+        """
+        keys_to_remove = [k for k in self._cache if k.startswith(pattern)]
+        for key in keys_to_remove:
+            self._cache.pop(key, None)
+        return len(keys_to_remove)
+
+
+# Global cache instance
+_local_cache = LocalCache()
+
+
+def get_cached(
+    key: str,
+    fetch_func: Callable[[], Optional[T]],
+    ttl: Optional[int] = None,
+) -> Optional[T]:
+    """
+    Get value from local cache or fetch from Redis.
+
+    Args:
+        key: Cache key.
+        fetch_func: Function to call if cache miss.
+        ttl: Cache TTL in seconds.
+
+    Returns:
+        Cached or fetched value, or None if unavailable.
+
+    Example:
+        def fetch_job_status():
+            return execute_redis_operation(
+                lambda c: c.hgetall(f"job:{job_id}:state"),
+                "get_job_status"
+            )
+
+        status = get_cached(f"status:{job_id}", fetch_job_status, ttl=5)
+    """
+    # Try local cache first
+    cached = _local_cache.get(key)
+    if cached is not None:
+        return cached
+
+    # Fetch from Redis
+    value = fetch_func()
+    if value is not None:
+        _local_cache.set(key, value, ttl)
+
+    return value
+
+
+def invalidate_cache(key: str) -> None:
+    """Invalidate a specific cache key."""
+    _local_cache.delete(key)
+
+
+def invalidate_cache_pattern(pattern: str) -> int:
+    """
+    Invalidate all cache keys matching pattern.
+
+    Returns:
+        Number of invalidated entries.
+    """
+    return _local_cache.invalidate_pattern(pattern)

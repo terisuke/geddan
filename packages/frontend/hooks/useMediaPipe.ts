@@ -1,11 +1,7 @@
 'use client';
 
-import {
-  FilesetResolver,
-  PoseLandmarker,
-  type PoseLandmarkerResult,
-} from '@mediapipe/tasks-vision';
-import { useEffect, useRef, useState } from 'react';
+import type { PoseLandmarkerResult } from '@mediapipe/tasks-vision';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface UseMediaPipeOptions {
   onResults: (results: PoseLandmarkerResult) => void;
@@ -13,44 +9,105 @@ interface UseMediaPipeOptions {
   runningMode?: 'IMAGE' | 'VIDEO';
 }
 
+// MediaPipe module cache for lazy loading
+let mediaPipeModule: typeof import('@mediapipe/tasks-vision') | null = null;
+let mediaPipeLoadPromise: Promise<typeof import('@mediapipe/tasks-vision')> | null = null;
+
+/**
+ * Lazy load MediaPipe tasks-vision module
+ * This reduces initial bundle size by ~2MB
+ */
+async function loadMediaPipeModule(): Promise<typeof import('@mediapipe/tasks-vision')> {
+  if (mediaPipeModule) {
+    return mediaPipeModule;
+  }
+
+  if (mediaPipeLoadPromise) {
+    return mediaPipeLoadPromise;
+  }
+
+  mediaPipeLoadPromise = import('@mediapipe/tasks-vision').then((mod) => {
+    mediaPipeModule = mod;
+    return mod;
+  });
+
+  return mediaPipeLoadPromise;
+}
+
+// Singleton cache for PoseLandmarker instances by model complexity
+const landmarkerCache = new Map<string, Promise<InstanceType<typeof import('@mediapipe/tasks-vision').PoseLandmarker>>>();
+
+/**
+ * Get or create a cached PoseLandmarker instance
+ * Reuses instances across hook calls to avoid redundant initialization
+ */
+async function getCachedLandmarker(
+  modelComplexity: 0 | 1 | 2,
+  runningMode: 'IMAGE' | 'VIDEO'
+): Promise<InstanceType<typeof import('@mediapipe/tasks-vision').PoseLandmarker>> {
+  const cacheKey = `${modelComplexity}-${runningMode}`;
+
+  if (landmarkerCache.has(cacheKey)) {
+    return landmarkerCache.get(cacheKey)!;
+  }
+
+  const promise = (async () => {
+    const { FilesetResolver, PoseLandmarker } = await loadMediaPipeModule();
+
+    // Vision tasks WASM files
+    const vision = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.15/wasm'
+    );
+
+    const modelName =
+      modelComplexity === 0 ? 'lite' : modelComplexity === 2 ? 'heavy' : 'full';
+
+    // Create PoseLandmarker
+    const landmarker = await PoseLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${modelName}/float16/1/pose_landmarker_${modelName}.task`,
+        delegate: 'GPU', // GPU acceleration
+      },
+      runningMode,
+      numPoses: 1,
+      minPoseDetectionConfidence: 0.5,
+      minPosePresenceConfidence: 0.5,
+      minTrackingConfidence: 0.5,
+    });
+
+    return landmarker;
+  })();
+
+  landmarkerCache.set(cacheKey, promise);
+  return promise;
+}
+
 export function useMediaPipe(
   videoRef: React.RefObject<HTMLVideoElement | null>,
   options: UseMediaPipeOptions
 ) {
-  const landmarkerRef = useRef<PoseLandmarker | null>(null);
+  const landmarkerRef = useRef<InstanceType<typeof import('@mediapipe/tasks-vision').PoseLandmarker> | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const animationFrameId = useRef<number | undefined>(undefined);
 
+  // Stable reference for callback to prevent unnecessary re-renders
+  const onResultsRef = useRef(options.onResults);
+  onResultsRef.current = options.onResults;
+
+  // Memoize the results handler
+  const handleResults = useCallback((results: PoseLandmarkerResult) => {
+    onResultsRef.current(results);
+  }, []);
+
   useEffect(() => {
     let isMounted = true;
+    const modelComplexity = options.modelComplexity ?? 1;
+    const runningMode = options.runningMode ?? 'VIDEO';
 
     async function initializeLandmarker() {
       try {
-        // Vision tasks用のwasmファイルを読み込み
-        const vision = await FilesetResolver.forVisionTasks(
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
-        );
-
-        const modelName =
-          options.modelComplexity === 0
-            ? 'lite'
-            : options.modelComplexity === 2
-              ? 'heavy'
-              : 'full';
-
-        // PoseLandmarkerを作成
-        const landmarker = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${modelName}/float16/1/pose_landmarker_${modelName}.task`,
-            delegate: 'GPU', // GPU加速を有効化
-          },
-          runningMode: options.runningMode || 'VIDEO',
-          numPoses: 1, // 1人のポーズのみ検出
-          minPoseDetectionConfidence: 0.5,
-          minPosePresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5,
-        });
+        const landmarker = await getCachedLandmarker(modelComplexity, runningMode);
 
         if (isMounted) {
           landmarkerRef.current = landmarker;
@@ -75,78 +132,106 @@ export function useMediaPipe(
       if (animationFrameId.current) {
         cancelAnimationFrame(animationFrameId.current);
       }
-      landmarkerRef.current?.close();
+      // Note: Don't close the landmarker here since it's cached and shared
     };
   }, [options.modelComplexity, options.runningMode]);
 
-  // ビデオストリームからリアルタイム検出
+  // Video stream real-time detection with frame throttling
   useEffect(() => {
     if (!isReady || !videoRef.current || !landmarkerRef.current) return;
 
     const video = videoRef.current;
     let lastVideoTime = -1;
-    let isDetecting = true; // 検出ループの実行フラグ
+    let lastProcessedTime = 0;
+    let isDetecting = true;
 
-    async function detectPose() {
+    // Target 30fps for detection to reduce CPU/GPU load
+    const TARGET_FPS = 30;
+    const FRAME_INTERVAL = 1000 / TARGET_FPS;
+
+    function detectPose(timestamp: number) {
       if (!isDetecting || !video || !landmarkerRef.current) {
-        // 検出が停止された、またはビデオ/landmarkerが利用できない場合は検出ループを停止
         return;
       }
 
-      // ビデオ要素が有効なサイズを持つことを確認（MediaPipeエラーを防ぐ）
+      // Check video readiness
       const videoWidth = video.videoWidth || 0;
       const videoHeight = video.videoHeight || 0;
-      const isVideoReady = videoWidth > 0 && videoHeight > 0 && video.readyState >= 2; // HAVE_CURRENT_DATA
+      const isVideoReady = videoWidth > 0 && videoHeight > 0 && video.readyState >= 2;
 
       if (!isVideoReady) {
-        // ビデオが準備できていない場合は次のフレームを待つ
         if (isDetecting) {
           animationFrameId.current = requestAnimationFrame(detectPose);
         }
         return;
       }
 
-      const now = performance.now();
+      // Frame throttling: skip if not enough time has passed
+      const elapsed = timestamp - lastProcessedTime;
+      if (elapsed < FRAME_INTERVAL) {
+        if (isDetecting) {
+          animationFrameId.current = requestAnimationFrame(detectPose);
+        }
+        return;
+      }
 
-      // 新しいフレームの場合のみ処理
+      // Only process new frames
       if (video.currentTime !== lastVideoTime) {
         lastVideoTime = video.currentTime;
+        lastProcessedTime = timestamp;
 
         try {
-          const results = landmarkerRef.current.detectForVideo(video, now);
+          const results = landmarkerRef.current.detectForVideo(video, timestamp);
           if (isDetecting) {
-            options.onResults(results);
+            handleResults(results);
           }
         } catch (err) {
-          // MediaPipeエラーをログに記録（ただし、ページ遷移による中断エラーは無視）
           const errorMessage = err instanceof Error ? err.message : String(err);
-          // AbortErrorや中断エラーは正常な動作なので無視
-          if (!errorMessage.includes('AbortError') && !errorMessage.includes('interrupted') && !errorMessage.includes('ROI width and height must be > 0')) {
+          // Ignore abort/interrupt errors (normal during navigation)
+          if (!errorMessage.includes('AbortError') &&
+              !errorMessage.includes('interrupted') &&
+              !errorMessage.includes('ROI width and height must be > 0')) {
             console.error('Pose detection error:', err);
           }
-          // エラーが発生した場合も検出を停止（無限ループを防ぐ）
           isDetecting = false;
           return;
         }
       }
 
-      // 次のフレームをリクエスト
       if (isDetecting) {
         animationFrameId.current = requestAnimationFrame(detectPose);
       }
     }
 
-    // 検出ループ開始
-    detectPose();
+    // Start detection loop
+    animationFrameId.current = requestAnimationFrame(detectPose);
 
     return () => {
-      isDetecting = false; // 検出を停止
+      isDetecting = false;
       if (animationFrameId.current) {
         cancelAnimationFrame(animationFrameId.current);
       }
     };
-  }, [isReady, videoRef, options]);
+  }, [isReady, videoRef, handleResults]);
 
   return { isReady, error };
+}
+
+/**
+ * Cleanup function to dispose all cached landmarkers
+ * Call this when the app is unmounting or when you need to free resources
+ */
+export async function disposeMediaPipeLandmarkers(): Promise<void> {
+  for (const [, promise] of landmarkerCache) {
+    try {
+      const landmarker = await promise;
+      landmarker.close();
+    } catch {
+      // Ignore errors during cleanup
+    }
+  }
+  landmarkerCache.clear();
+  mediaPipeModule = null;
+  mediaPipeLoadPromise = null;
 }
 

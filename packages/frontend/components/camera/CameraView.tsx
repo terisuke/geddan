@@ -8,20 +8,24 @@ import type {
   PoseLandmarkerResult,
 } from '@mediapipe/tasks-vision';
 import Image from 'next/image';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+interface TargetPoseLandmark {
+  x: number;
+  y: number;
+  z: number;
+  visibility: number;
+}
+
+interface TargetPose {
+  thumbnail: string;
+  pose_landmarks: {
+    landmarks: TargetPoseLandmark[];
+  };
+}
 
 interface CameraViewProps {
-  targetPose: {
-    thumbnail: string;
-    pose_landmarks: {
-      landmarks: Array<{
-        x: number;
-        y: number;
-        z: number;
-        visibility: number;
-      }>;
-    };
-  };
+  targetPose: TargetPose;
   onCapture: (blob: Blob) => void;
   onSimilarityChange?: (similarity: number) => void;
   onReadyChange?: (isReady: boolean) => void;
@@ -29,7 +33,54 @@ interface CameraViewProps {
   overlayOpacity?: number;
 }
 
-export function CameraView({
+// Memoized overlay image component to prevent unnecessary re-renders
+const PoseOverlay = memo(function PoseOverlay({
+  thumbnail,
+  opacity,
+}: {
+  thumbnail: string;
+  opacity: number;
+}) {
+  if (opacity <= 0) return null;
+
+  return (
+    <div
+      className="absolute inset-0 pointer-events-none transition-opacity duration-300"
+      style={{ opacity }}
+    >
+      <Image
+        src={thumbnail}
+        alt="Target pose"
+        fill
+        className="object-cover"
+        unoptimized
+        priority={false}
+      />
+    </div>
+  );
+});
+
+// Loading state component
+const LoadingOverlay = memo(function LoadingOverlay({
+  isActive,
+  isMediaPipeReady,
+}: {
+  isActive: boolean;
+  isMediaPipeReady: boolean;
+}) {
+  if (isActive && isMediaPipeReady) return null;
+
+  return (
+    <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
+      <div className="text-white text-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-white mx-auto mb-2"></div>
+        <p>{!isActive ? "Starting Camera..." : "Loading AI Model..."}</p>
+      </div>
+    </div>
+  );
+});
+
+function CameraViewComponent({
   targetPose,
   onCapture,
   onSimilarityChange,
@@ -38,20 +89,35 @@ export function CameraView({
   overlayOpacity = 0.3,
 }: CameraViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [hasTargetLandmarks, setHasTargetLandmarks] = useState(false);
 
   const { videoRef, isActive, error: cameraError, startCamera, stopCamera } =
     useCamera({ facingMode: 'user' });
 
-  // ターゲットランドマークの有無をチェック
-  useEffect(() => {
-    const hasLandmarks =
-      targetPose?.pose_landmarks?.landmarks &&
-      targetPose.pose_landmarks.landmarks.length > 0;
-    setHasTargetLandmarks(hasLandmarks);
-  }, [targetPose]);
+  // Stable refs for callbacks to prevent unnecessary re-renders
+  const onSimilarityChangeRef = useRef(onSimilarityChange);
+  const onCaptureRef = useRef(onCapture);
+  onSimilarityChangeRef.current = onSimilarityChange;
+  onCaptureRef.current = onCapture;
 
-  const captureFrame = async () => {
+  // Memoize target landmarks conversion to avoid recalculating on each frame
+  const targetLandmarks = useMemo(() => {
+    const landmarks = targetPose?.pose_landmarks?.landmarks;
+    if (!landmarks || landmarks.length === 0) return null;
+
+    return landmarks.map(
+      (lm): NormalizedLandmark => ({
+        x: lm.x,
+        y: lm.y,
+        z: lm.z,
+        visibility: lm.visibility,
+      })
+    );
+  }, [targetPose?.pose_landmarks?.landmarks]);
+
+  const hasTargetLandmarks = targetLandmarks !== null && targetLandmarks.length > 0;
+
+  // Memoized capture function
+  const captureFrame = useCallback(() => {
     if (!canvasRef.current || !videoRef.current) return;
 
     const canvas = canvasRef.current;
@@ -66,69 +132,72 @@ export function CameraView({
     // Mirror horizontally for the capture to match preview
     ctx.translate(canvas.width, 0);
     ctx.scale(-1, 1);
-
     ctx.drawImage(video, 0, 0);
-
-    // Reset transform
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     canvas.toBlob(
       (blob) => {
         if (blob) {
-          onCapture(blob);
+          onCaptureRef.current(blob);
         }
       },
       'image/jpeg',
       0.92
     );
-  };
+  }, [videoRef]);
 
   // Expose capture function to parent
   useEffect(() => {
     if (captureTriggerRef) {
       captureTriggerRef.current = captureFrame;
     }
-    // captureFrameはuseCallback化していないため、依存配列から除外
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [captureTriggerRef]);
+  }, [captureTriggerRef, captureFrame]);
+
+  // Throttled similarity update to reduce re-renders
+  const lastSimilarityRef = useRef<number>(0);
+  const lastUpdateTimeRef = useRef<number>(0);
+  const SIMILARITY_UPDATE_INTERVAL = 100; // Update at most every 100ms
 
   const handleResults = useCallback(
     (results: PoseLandmarkerResult) => {
-      // カメラからポーズが検出されない場合
+      // No pose detected from camera
       if (!results.landmarks || results.landmarks.length === 0) {
-        onSimilarityChange?.(0);
+        if (lastSimilarityRef.current !== 0) {
+          lastSimilarityRef.current = 0;
+          onSimilarityChangeRef.current?.(0);
+        }
         return;
       }
 
-      // ターゲットランドマークがない場合は類似度計算をスキップ
-      if (
-        !targetPose?.pose_landmarks?.landmarks ||
-        targetPose.pose_landmarks.landmarks.length === 0
-      ) {
-        // ポーズは検出されているが比較対象がない
-        onSimilarityChange?.(0);
+      // No target landmarks to compare against
+      if (!targetLandmarks) {
+        if (lastSimilarityRef.current !== 0) {
+          lastSimilarityRef.current = 0;
+          onSimilarityChangeRef.current?.(0);
+        }
         return;
       }
+
+      // Throttle similarity updates
+      const now = performance.now();
+      if (now - lastUpdateTimeRef.current < SIMILARITY_UPDATE_INTERVAL) {
+        return;
+      }
+      lastUpdateTimeRef.current = now;
 
       const currentLandmarks = results.landmarks[0] as NormalizedLandmark[];
-      const targetLandmarks = targetPose.pose_landmarks.landmarks.map(
-        (lm) =>
-          ({
-            x: lm.x,
-            y: lm.y,
-            z: lm.z,
-            visibility: lm.visibility,
-          }) as NormalizedLandmark
-      );
-
       const { similarity: sim } = calculatePoseSimilarity(
         targetLandmarks,
         currentLandmarks
       );
 
-      onSimilarityChange?.(sim);
+      // Only update if similarity changed significantly (>1%)
+      if (Math.abs(sim - lastSimilarityRef.current) >= 1) {
+        lastSimilarityRef.current = sim;
+        onSimilarityChangeRef.current?.(sim);
+      }
     },
-    [targetPose, onSimilarityChange]
+    [targetLandmarks]
   );
 
   const { isReady: isMediaPipeReady, error: mediaPipeError } = useMediaPipe(
@@ -188,22 +257,9 @@ export function CameraView({
       />
 
       {/* Target Pose Overlay (Optional, controlled by prop) */}
-      {overlayOpacity > 0 && (
-        <div
-          className="absolute inset-0 pointer-events-none transition-opacity duration-300"
-          style={{ opacity: overlayOpacity }}
-        >
-          <Image
-            src={targetPose.thumbnail}
-            alt="Target pose"
-            fill
-            className="object-cover"
-            unoptimized
-          />
-        </div>
-      )}
+      <PoseOverlay thumbnail={targetPose.thumbnail} opacity={overlayOpacity} />
 
-      {/* ランドマーク未検出の警告 */}
+      {/* No landmarks warning */}
       {!hasTargetLandmarks && isActive && isMediaPipeReady && (
         <div className="absolute top-4 right-4 bg-yellow-600/90 px-3 py-1 rounded text-sm">
           比較準備中...
@@ -214,15 +270,11 @@ export function CameraView({
       <canvas ref={canvasRef} className="hidden" />
 
       {/* Loading States */}
-      {(!isActive || !isMediaPipeReady) && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
-          <div className="text-white text-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-white mx-auto mb-2"></div>
-            <p>{!isActive ? "Starting Camera..." : "Loading AI Model..."}</p>
-          </div>
-        </div>
-      )}
+      <LoadingOverlay isActive={isActive} isMediaPipeReady={isMediaPipeReady} />
     </div>
   );
 }
+
+// Export memoized component to prevent unnecessary re-renders from parent
+export const CameraView = memo(CameraViewComponent);
 

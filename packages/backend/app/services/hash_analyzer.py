@@ -1,44 +1,97 @@
 """
-Perceptual hash (pHash) analyzer for frame clustering
+Perceptual hash (pHash) analyzer for frame clustering.
 
 Uses imagehash library to compute perceptual hashes and cluster similar frames.
 This helps identify unique poses/keyframes in animation loops.
+
+Performance optimizations:
+- Batch processing with configurable chunk size
+- Memory-efficient image handling (explicit cleanup)
+- Parallel hash computation using ThreadPoolExecutor
+- Generator-based processing for large frame sets
 """
 
 import imagehash
 from PIL import Image
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Iterator, Generator
 import logging
 from collections import defaultdict
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import gc
 
 logger = logging.getLogger(__name__)
+
+# Performance configuration
+DEFAULT_CHUNK_SIZE = 100  # Process frames in batches
+HASH_PARALLEL_WORKERS = int(os.getenv("HASH_PARALLEL_WORKERS", str(os.cpu_count() or 4)))
+ENABLE_PARALLEL_HASHING = os.getenv("HASH_ENABLE_PARALLEL", "true").lower() == "true"
+
+
+def _compute_single_hash(
+    frame_path: Path, hash_size: int
+) -> Tuple[Path, Optional[imagehash.ImageHash]]:
+    """
+    Compute perceptual hash for a single frame (worker function).
+
+    Args:
+        frame_path: Path to frame image.
+        hash_size: Hash size parameter.
+
+    Returns:
+        Tuple of (frame_path, hash) or (frame_path, None) on error.
+    """
+    try:
+        with Image.open(frame_path) as img:
+            phash = imagehash.phash(img, hash_size=hash_size)
+            return (frame_path, phash)
+    except Exception as e:
+        logger.error(f"Failed to compute hash for {frame_path}: {e}")
+        return (frame_path, None)
 
 
 class HashAnalyzer:
     """
-    Analyze frames using perceptual hashing and clustering
+    Analyze frames using perceptual hashing and clustering.
 
     Uses imagehash.phash to compute perceptual hashes, then clusters
     frames based on Hamming distance between hashes.
+
+    Performance features:
+    - Optional parallel hash computation
+    - Chunked processing for memory efficiency
+    - Explicit garbage collection after large batches
     """
 
-    def __init__(self, hash_size: int = 8, hamming_threshold: Optional[int] = None):
+    def __init__(
+        self,
+        hash_size: int = 8,
+        hamming_threshold: Optional[int] = None,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        parallel_workers: int = HASH_PARALLEL_WORKERS,
+        enable_parallel: bool = ENABLE_PARALLEL_HASHING,
+    ):
         """
-        Initialize HashAnalyzer
+        Initialize HashAnalyzer.
 
         Args:
-            hash_size: Size of the hash (8 = 64-bit hash, 16 = 256-bit hash)
-                       Smaller = faster, less precise
-                       Larger = slower, more precise
-            hamming_threshold: Maximum Hamming distance to consider frames as similar
-                              If None, reads from HASH_HAMMING_THRESHOLD env var (default: 6)
-                              Lower = stricter clustering (more clusters, separates similar poses)
-                              Higher = looser clustering (fewer clusters, merges similar poses)
-                              Recommended: 5-7 (higher for high FPS videos to merge duplicates)
+            hash_size: Size of the hash (8 = 64-bit hash, 16 = 256-bit hash).
+                       Smaller = faster, less precise.
+                       Larger = slower, more precise.
+            hamming_threshold: Maximum Hamming distance to consider frames as similar.
+                              If None, reads from HASH_HAMMING_THRESHOLD env var (default: 6).
+                              Lower = stricter clustering (more clusters).
+                              Higher = looser clustering (fewer clusters).
+                              Recommended: 5-7 (higher for high FPS videos).
+            chunk_size: Number of frames to process before garbage collection.
+            parallel_workers: Number of parallel workers for hash computation.
+            enable_parallel: Whether to use parallel processing.
         """
         self.hash_size = hash_size
+        self.chunk_size = chunk_size
+        self.parallel_workers = parallel_workers
+        self.enable_parallel = enable_parallel
 
         # Read hamming threshold from environment variable if not provided
         if hamming_threshold is None:
@@ -47,35 +100,121 @@ class HashAnalyzer:
 
         self.hamming_threshold = hamming_threshold
 
+        logger.info(
+            f"HashAnalyzer initialized: hash_size={hash_size}, threshold={hamming_threshold}, "
+            f"chunk_size={chunk_size}, parallel={enable_parallel}, workers={parallel_workers}"
+        )
+
     def compute_hashes(self, frame_paths: List[Path]) -> Dict[Path, imagehash.ImageHash]:
         """
-        Compute perceptual hashes for all frames
+        Compute perceptual hashes for all frames.
+
+        Uses parallel processing when enabled for better performance.
+        Processes frames in chunks to manage memory usage.
 
         Args:
-            frame_paths: List of paths to frame image files
+            frame_paths: List of paths to frame image files.
 
         Returns:
-            Dictionary mapping frame paths to their perceptual hashes
+            Dictionary mapping frame paths to their perceptual hashes.
 
         Raises:
-            RuntimeError: If hash computation fails
+            RuntimeError: If hash computation fails.
+        """
+        total_frames = len(frame_paths)
+        logger.info(
+            f"Computing pHash for {total_frames} frames "
+            f"(hash_size={self.hash_size}, parallel={self.enable_parallel})"
+        )
+
+        if self.enable_parallel and total_frames > 10:
+            # Use parallel processing for larger frame sets
+            hashes = self._compute_hashes_parallel(frame_paths)
+        else:
+            # Use sequential processing for small sets or when disabled
+            hashes = self._compute_hashes_sequential(frame_paths)
+
+        logger.info(f"Computed {len(hashes)} perceptual hashes")
+        return hashes
+
+    def _compute_hashes_sequential(
+        self, frame_paths: List[Path]
+    ) -> Dict[Path, imagehash.ImageHash]:
+        """
+        Compute hashes sequentially with memory management.
+
+        Args:
+            frame_paths: List of frame paths.
+
+        Returns:
+            Dictionary of frame paths to hashes.
         """
         hashes = {}
-
-        logger.info(f"Computing pHash for {len(frame_paths)} frames (hash_size={self.hash_size})")
+        processed = 0
 
         for frame_path in frame_paths:
             try:
                 with Image.open(frame_path) as img:
-                    # Compute perceptual hash
                     phash = imagehash.phash(img, hash_size=self.hash_size)
                     hashes[frame_path] = phash
+
+                processed += 1
+
+                # Garbage collect after each chunk to manage memory
+                if processed % self.chunk_size == 0:
+                    gc.collect()
+                    logger.debug(f"Processed {processed}/{len(frame_paths)} frames")
 
             except Exception as e:
                 logger.error(f"Failed to compute hash for {frame_path}: {e}")
                 raise RuntimeError(f"Hash computation failed for {frame_path.name}: {e}")
 
-        logger.info(f"Computed {len(hashes)} perceptual hashes")
+        return hashes
+
+    def _compute_hashes_parallel(
+        self, frame_paths: List[Path]
+    ) -> Dict[Path, imagehash.ImageHash]:
+        """
+        Compute hashes in parallel using ThreadPoolExecutor.
+
+        Args:
+            frame_paths: List of frame paths.
+
+        Returns:
+            Dictionary of frame paths to hashes.
+        """
+        hashes = {}
+        failed_frames = []
+
+        with ThreadPoolExecutor(max_workers=self.parallel_workers) as executor:
+            # Submit all tasks
+            futures = {
+                executor.submit(_compute_single_hash, path, self.hash_size): path
+                for path in frame_paths
+            }
+
+            # Collect results as they complete
+            for i, future in enumerate(as_completed(futures)):
+                frame_path, phash = future.result()
+
+                if phash is not None:
+                    hashes[frame_path] = phash
+                else:
+                    failed_frames.append(frame_path)
+
+                # Log progress periodically
+                if (i + 1) % self.chunk_size == 0:
+                    logger.debug(f"Processed {i + 1}/{len(frame_paths)} frames")
+
+        # Cleanup
+        gc.collect()
+
+        if failed_frames:
+            raise RuntimeError(
+                f"Hash computation failed for {len(failed_frames)} frames: "
+                f"{failed_frames[0].name}"
+            )
+
         return hashes
 
     def cluster_frames(

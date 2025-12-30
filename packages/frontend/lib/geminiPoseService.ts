@@ -1,12 +1,40 @@
 /**
- * Gemini API を使用したアニメ/イラスト画像からのポーズ抽出サービス
+ * Gemini API for anime/illustration pose extraction
  *
- * MediaPipeは実写画像に最適化されているため、アニメ/イラスト画像では
- * ポーズを検出できないことが多い。Gemini Vision APIを使用することで、
- * アニメ/イラスト画像からも骨格情報を抽出できる。
+ * MediaPipe is optimized for real photos, so it often fails to detect poses
+ * in anime/illustration images. Gemini Vision API can extract skeletal info
+ * from these images.
+ *
+ * Performance optimizations:
+ * - Lazy loading of Gemini SDK (~500KB)
+ * - Singleton model instance
+ * - Result caching for repeated images
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+// Lazy load Gemini SDK to reduce initial bundle size
+let geminiModule: typeof import('@google/generative-ai') | null = null;
+let geminiLoadPromise: Promise<typeof import('@google/generative-ai')> | null = null;
+
+async function loadGeminiModule(): Promise<typeof import('@google/generative-ai')> {
+  if (geminiModule) {
+    return geminiModule;
+  }
+
+  if (geminiLoadPromise) {
+    return geminiLoadPromise;
+  }
+
+  geminiLoadPromise = import('@google/generative-ai').then((mod) => {
+    geminiModule = mod;
+    return mod;
+  });
+
+  return geminiLoadPromise;
+}
+
+// Singleton instances
+let genAIInstance: InstanceType<typeof import('@google/generative-ai').GoogleGenerativeAI> | null = null;
+let modelInstance: ReturnType<InstanceType<typeof import('@google/generative-ai').GoogleGenerativeAI>['getGenerativeModel']> | null = null;
 
 // Gemini APIキー（環境変数から取得）
 const GEMINI_API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
@@ -76,8 +104,31 @@ async function withRetry<T>(
   throw new Error('Max retries reached');
 }
 
+// Cache for pose analysis results
+const poseCache = new Map<string, GeminiPoseData>();
+const MAX_CACHE_SIZE = 50;
+
 /**
- * Gemini APIを使用してアニメ/イラスト画像からポーズを解析
+ * Get or create singleton model instance
+ */
+async function getModelInstance() {
+  if (modelInstance) {
+    return modelInstance;
+  }
+
+  const { GoogleGenerativeAI } = await loadGeminiModule();
+
+  if (!genAIInstance) {
+    genAIInstance = new GoogleGenerativeAI(GEMINI_API_KEY);
+  }
+
+  // Gemini 3 Flash (2025-12) - Pro-level performance at Flash speed
+  modelInstance = genAIInstance.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+  return modelInstance;
+}
+
+/**
+ * Analyze anime/illustration pose with Gemini API
  */
 export async function analyzeAnimePoseWithGemini(
   imageUrl: string
@@ -87,11 +138,14 @@ export async function analyzeAnimePoseWithGemini(
     return null;
   }
 
+  // Check cache first
+  const cached = poseCache.get(imageUrl);
+  if (cached) {
+    return cached;
+  }
+
   try {
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    // Gemini 3 Flash (2025年12月リリース) - Pro級の性能をFlashの速度で実現
-    // https://ai.google.dev/gemini-api/docs/models#gemini-3-flash
-    const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+    const model = await getModelInstance();
 
     // 画像をBase64に変換
     const base64Data = await imageUrlToBase64(imageUrl);
@@ -157,17 +211,31 @@ IMPORTANT: Return ONLY valid JSON in this exact format, no markdown or explanati
 
     const parsed = JSON.parse(jsonMatch[0]) as GeminiPoseData;
 
-    // 必要なフィールドの検証
+    // Validate required fields
     if (!parsed.joints || !parsed.poseDescription) {
       console.error('Invalid response structure from Gemini:', parsed);
       return null;
     }
+
+    // Cache the result (with LRU-like eviction)
+    if (poseCache.size >= MAX_CACHE_SIZE) {
+      const firstKey = poseCache.keys().next().value;
+      if (firstKey) poseCache.delete(firstKey);
+    }
+    poseCache.set(imageUrl, parsed);
 
     return parsed;
   } catch (error) {
     console.error('Gemini pose analysis failed:', error);
     return null;
   }
+}
+
+/**
+ * Clear the pose analysis cache
+ */
+export function clearPoseCache(): void {
+  poseCache.clear();
 }
 
 /**
