@@ -1,13 +1,14 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useAppStore } from '@/store/useAppStore';
 import { CameraView } from '@/components/camera/CameraView';
-import { SimilarityMeter } from '@/components/camera/SimilarityMeter';
-import { Timer } from '@/components/camera/Timer';
+import { useAppStore } from '@/store/useAppStore';
+import { Pause, Play, SkipForward } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-const TIMEOUT_SECONDS = 30; // 30秒タイムアウト
+const WAIT_SECONDS = 10;
+const COUNTDOWN_SECONDS = 5;
+const SIMILARITY_THRESHOLD = 70;
 
 export default function CapturePage() {
   const router = useRouter();
@@ -17,166 +18,215 @@ export default function CapturePage() {
     capturedImages,
     addCapturedImage,
     nextPose,
-    setStatus,
+    setCurrentPoseIndex
   } = useAppStore();
 
   const [similarity, setSimilarity] = useState(0);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
 
-  // 全ポーズが撮影済みかチェック
+  // Timer state
+  const [timeLeft, setTimeLeft] = useState(WAIT_SECONDS);
+  const [countdown, setCountdown] = useState<number | null>(null); // null means not in countdown
+
+  // Camera control ref
+  const captureRef = useRef<() => void>(() => { });
+
+  // Check if all poses are captured
   useEffect(() => {
     if (uniqueFrames.length === 0) {
       router.push('/upload');
       return;
     }
 
-    const allCaptured = uniqueFrames.every(
-      (_, index) => capturedImages[index] !== undefined
-    );
-
-    if (allCaptured && uniqueFrames.length > 0) {
-      // 全ポーズ撮影完了 → レビューページへ
+    if (currentPoseIndex >= uniqueFrames.length) {
       router.push('/review');
     }
-  }, [uniqueFrames, capturedImages, router]);
+  }, [uniqueFrames, currentPoseIndex, router]);
 
-  // 現在の目標ポーズ
-  const targetPose = uniqueFrames[currentPoseIndex];
+  // triggerCapture must be defined before the useEffects that use it
+  const triggerCapture = useCallback(async () => {
+    if (isCapturing) return;
+    setIsCapturing(true);
 
-  const handleCapture = useCallback(
-    async (blob: Blob) => {
-      if (isCapturing) return;
+    // Visual feedback
+    const flash = document.createElement('div');
+    flash.className = 'fixed inset-0 bg-white z-50 pointer-events-none opacity-0';
+    document.body.appendChild(flash);
 
-      setIsCapturing(true);
-
-      // フラッシュエフェクト（視覚的フィードバック）
-      const flash = document.createElement('div');
-      flash.className =
-        'fixed inset-0 bg-white z-50 pointer-events-none opacity-0';
-      document.body.appendChild(flash);
-
-      // フラッシュアニメーション
-      requestAnimationFrame(() => {
-        flash.style.transition = 'opacity 0.1s';
-        flash.style.opacity = '1';
-        setTimeout(() => {
-          flash.style.opacity = '0';
-          setTimeout(() => {
-            document.body.removeChild(flash);
-          }, 100);
-        }, 100);
-      });
-
-      // シャッター音（オプション）
-      try {
-        const audio = new Audio('/sounds/shutter.mp3');
-        await audio.play().catch(() => {
-          // 音声ファイルがない場合は無視
-        });
-      } catch {
-        // エラーは無視
-      }
-
-      // 画像をストアに保存
-      addCapturedImage(currentPoseIndex, blob);
-
-      // 次のポーズへ（少し遅延）
+    requestAnimationFrame(() => {
+      flash.style.transition = 'opacity 0.1s';
+      flash.style.opacity = '1';
       setTimeout(() => {
-        if (currentPoseIndex < uniqueFrames.length - 1) {
-          nextPose();
-          setSimilarity(0);
+        flash.style.opacity = '0';
+        setTimeout(() => document.body.removeChild(flash), 100);
+      }, 100);
+    });
+
+    // Sound
+    try {
+      new Audio('/sounds/shutter.mp3').play().catch(() => { });
+    } catch { }
+
+    // Capture frame via ref
+    captureRef.current();
+
+    // Wait slightly before moving next
+    await new Promise(r => setTimeout(r, 500));
+
+    if (currentPoseIndex < uniqueFrames.length) {
+      nextPose();
+      // Reset state for next pose
+      setSimilarity(0);
+      setTimeLeft(WAIT_SECONDS);
+      setCountdown(null);
+      setIsCapturing(false);
+    }
+  }, [isCapturing, currentPoseIndex, uniqueFrames.length, nextPose]);
+
+  // Main Timer Logic
+  useEffect(() => {
+    if (isPaused || isCapturing) return;
+
+    const timer = setInterval(() => {
+      // 1. Initial 10s wait period
+      if (countdown === null) {
+        if (timeLeft > 0) {
+          setTimeLeft(prev => prev - 1);
+        } else {
+          // Time up -> Start 5s countdown
+          setCountdown(COUNTDOWN_SECONDS);
         }
-        setIsCapturing(false);
-      }, 500);
-    },
-    [currentPoseIndex, uniqueFrames.length, addCapturedImage, nextPose, isCapturing]
-  );
+      }
+      // 2. 5s Countdown period
+      else {
+        if (countdown > 0) {
+          setCountdown(prev => (prev !== null ? prev - 1 : null));
+        } else {
+          // Countdown finished -> Force capture
+          clearInterval(timer);
+          triggerCapture();
+        }
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isPaused, isCapturing, timeLeft, countdown, triggerCapture]);
+
+  // Auto-Shutter Logic - disabled linting as intentional async state update
+  useEffect(() => {
+    if (isPaused || isCapturing || countdown !== null) return;
+
+    if (similarity >= SIMILARITY_THRESHOLD) {
+      // Intentional: triggerCapture is a user-initiated action triggered by similarity reaching threshold
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      triggerCapture();
+    }
+  }, [similarity, isPaused, isCapturing, countdown, triggerCapture]);
+
+  const handleCapture = useCallback((blob: Blob) => {
+    addCapturedImage(currentPoseIndex, blob);
+  }, [addCapturedImage, currentPoseIndex]);
+
+  const togglePause = () => setIsPaused(prev => !prev);
 
   const handleSkip = () => {
-    if (currentPoseIndex < uniqueFrames.length - 1) {
-      nextPose();
-      setSimilarity(0);
-    }
+    nextPose();
+    setSimilarity(0);
+    setTimeLeft(WAIT_SECONDS);
+    setCountdown(null);
   };
 
-  const handleTimeout = () => {
-    // タイムアウト時はスキップ
-    handleSkip();
-  };
+  const currentPose = uniqueFrames[currentPoseIndex];
 
-  if (!targetPose) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center">
-        <p className="text-gray-600">ポーズデータを読み込み中...</p>
-      </div>
-    );
-  }
+  if (!currentPose) return null;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 py-8 px-4">
-      <div className="max-w-6xl mx-auto">
-        {/* ヘッダー */}
-        <div className="mb-6 flex justify-between items-center">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-800 mb-2">
-              ポーズを撮影
-            </h1>
-            <p className="text-gray-600">
-              ポーズ {currentPoseIndex + 1} / {uniqueFrames.length}
-            </p>
-          </div>
-          <Timer
-            initialSeconds={TIMEOUT_SECONDS}
-            onTimeout={handleTimeout}
+    <div className="min-h-screen bg-black text-white p-4 flex flex-col">
+      {/* Header / Progress */}
+      <div className="flex justify-between items-center mb-4 px-4">
+        <div className="flex items-center gap-4">
+          <button onClick={togglePause} className="p-2 rounded-full bg-gray-800 hover:bg-gray-700">
+            {isPaused ? <Play size={24} /> : <Pause size={24} />}
+          </button>
+          <span className="font-mono text-xl">
+            Pose {currentPoseIndex + 1} / {uniqueFrames.length}
+          </span>
+        </div>
+
+        <div className="text-xl font-bold">
+          {countdown !== null ? (
+            <span className="text-red-500 animate-pulse text-4xl">{countdown}</span>
+          ) : (
+            <span className="text-gray-400">{timeLeft}s</span>
+          )}
+        </div>
+
+        <button onClick={handleSkip} className="flex items-center gap-2 px-4 py-2 bg-gray-800 rounded hover:bg-gray-700">
+          Skip <SkipForward size={18} />
+        </button>
+      </div>
+
+      {/* Split Screen Content */}
+      <div className="flex-1 grid grid-cols-2 gap-4 h-full min-h-0">
+        {/* Left: Target Pose */}
+        <div className="relative bg-gray-900 rounded-2xl overflow-hidden border-2 border-slate-700">
+          <img
+            src={currentPose.thumbnail}
+            alt="Target Pose"
+            className="w-full h-full object-contain"
           />
+          <div className="absolute top-4 left-4 bg-black/50 px-3 py-1 rounded text-sm">
+            Target
+          </div>
         </div>
 
-        {/* 類似度メーター */}
-        <div className="mb-6">
-          <SimilarityMeter similarity={similarity} threshold={85} />
-        </div>
-
-        {/* カメラビュー */}
-        <div className="mb-6">
+        {/* Right: Camera Preview */}
+        <div className="relative bg-gray-900 rounded-2xl overflow-hidden border-2 border-slate-700">
           <CameraView
-            targetPose={targetPose}
+            targetPose={currentPose}
             onCapture={handleCapture}
             onSimilarityChange={setSimilarity}
+            captureTriggerRef={captureRef}
+            overlayOpacity={0} // No overlay in split mode
           />
-        </div>
-
-        {/* アクションボタン */}
-        <div className="flex justify-center gap-4">
-          <button
-            onClick={handleSkip}
-            className="px-6 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
-          >
-            スキップ
-          </button>
-          <button
-            onClick={() => router.push('/review')}
-            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            確認画面へ
-          </button>
-        </div>
-
-        {/* 進捗表示 */}
-        <div className="mt-6 text-center">
-          <div className="flex justify-center gap-2">
-            {uniqueFrames.map((_, index) => (
-              <div
-                key={index}
-                className={`w-3 h-3 rounded-full ${
-                  index === currentPoseIndex
-                    ? 'bg-purple-600'
-                    : capturedImages[index]
-                      ? 'bg-green-500'
-                      : 'bg-gray-300'
-                }`}
-              />
-            ))}
+          <div className="absolute top-4 left-4 bg-black/50 px-3 py-1 rounded text-sm">
+            Camera
           </div>
+
+          {/* Similarity Badge */}
+          <div className={`absolute bottom-4 right-4 px-6 py-3 rounded-full text-xl font-bold transition-colors ${similarity >= SIMILARITY_THRESHOLD ? 'bg-green-500 text-white' : 'bg-black/50 text-gray-300'
+            }`}>
+            {Math.round(similarity)}%
+          </div>
+        </div>
+      </div>
+
+      {/* Footer Navigation */}
+      <div className="mt-4 overflow-x-auto pb-2">
+        <div className="flex gap-2 min-w-max px-2">
+          {uniqueFrames.map((frame, idx) => (
+            <div
+              key={idx}
+              onClick={() => {
+                setCurrentPoseIndex(idx);
+                setSimilarity(0);
+                setTimeLeft(WAIT_SECONDS);
+                setCountdown(null);
+                setIsPaused(true); // Pause when manually selecting
+              }}
+              className={`relative w-16 h-16 rounded overflow-hidden cursor-pointer border-2 transition-all ${idx === currentPoseIndex ? 'border-blue-500 scale-110 z-10' :
+                  capturedImages[idx] ? 'border-green-500 opacity-50' : 'border-gray-700 opacity-50'
+                }`}
+            >
+              <img src={frame.thumbnail} className="w-full h-full object-cover" />
+              {capturedImages[idx] && (
+                <div className="absolute inset-0 bg-green-500/30 flex items-center justify-center text-xs font-bold">
+                  ✓
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </div>
     </div>

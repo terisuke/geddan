@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { uploadVideo } from '@/lib/api';
 import { getUploadRules, type UploadRules } from '@/lib/api/rules';
 import { useAppStore } from '@/store/useAppStore';
+import { useErrorHandler } from '@/hooks/useErrorHandler';
 
 // デフォルト値（サーバーから取得できない場合のフォールバック）
 const DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
@@ -24,10 +25,13 @@ export function FileUploader({
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [retryInfo, setRetryInfo] = useState<{ attempt: number; delay: number } | null>(null);
   const [uploadRules, setUploadRules] = useState<UploadRules | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const { setJobId, setStatus } = useAppStore();
+  const { handleError, showWarning, showSuccess } = useErrorHandler();
 
   // サーバーからバリデーションルールを取得
   useEffect(() => {
@@ -83,30 +87,51 @@ export function FileUploader({
       }
 
       setError(null);
+      setUploadProgress(0);
+      setRetryInfo(null);
       setIsUploading(true);
       onUploadStart?.();
 
       try {
         setStatus('uploading');
-        const response = await uploadVideo(file);
-        
+        const response = await uploadVideo(
+          file,
+          // 進捗コールバック
+          (percent) => {
+            setUploadProgress(percent);
+          },
+          // リトライコールバック
+          (attempt, delay) => {
+            setRetryInfo({ attempt, delay });
+            showWarning(
+              `接続をリトライ中... (${attempt}回目)`,
+              `${Math.round(delay / 1000)}秒後に再試行します`
+            );
+          }
+        );
+
+        setRetryInfo(null);
         setJobId(response.job_id);
         setStatus('analyzing');
+        showSuccess('アップロード完了', '動画の解析を開始しました');
         onUploadComplete?.(response.job_id);
-        
+
         // 解析ページへ遷移
         router.push(`/analysis?jobId=${response.job_id}`);
       } catch (err) {
-        const errorMessage =
-          err instanceof Error ? err.message : 'アップロードに失敗しました';
+        // エラーハンドラでToast通知も表示される
+        const appError = handleError(err);
+        const errorMessage = appError.userMessage;
         setError(errorMessage);
         onError?.(errorMessage);
         setStatus('idle');
       } finally {
         setIsUploading(false);
+        setUploadProgress(0);
+        setRetryInfo(null);
       }
     },
-    [onUploadStart, onUploadComplete, onError, router, setJobId, setStatus]
+    [onUploadStart, onUploadComplete, onError, router, setJobId, setStatus, handleError, showWarning, showSuccess]
   );
 
   const handleDrop = useCallback(
@@ -189,8 +214,22 @@ export function FileUploader({
             <>
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto mb-4"></div>
               <p className="text-lg font-semibold text-gray-700">
-                アップロード中...
+                {retryInfo
+                  ? `リトライ中... (${retryInfo.attempt}回目)`
+                  : 'アップロード中...'}
               </p>
+              {/* 進捗バー */}
+              {uploadProgress > 0 && !retryInfo && (
+                <div className="mt-4 w-full max-w-xs mx-auto">
+                  <div className="bg-gray-200 rounded-full h-2">
+                    <div
+                      className="bg-purple-600 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                  <p className="text-sm text-gray-500 mt-2">{uploadProgress}%</p>
+                </div>
+              )}
             </>
           ) : (
             <>

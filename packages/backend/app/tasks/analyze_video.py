@@ -13,33 +13,20 @@ import logging
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
-import redis
 import json
-import os
 import time
 
 from app.celery_worker import celery_app
 from app.services.frame_extractor import frame_extractor
 from app.services.hash_analyzer import hash_analyzer
 from app.services.file_service import file_service
+from app.services.redis_client import (
+    get_redis_client,
+    execute_redis_operation,
+    check_redis_health,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def get_redis_client() -> Optional[redis.Redis]:
-    """Get synchronous Redis client for storing job status in Celery tasks"""
-    try:
-        redis_url = os.getenv("REDIS_URL")
-        if not redis_url:
-            redis_host = os.getenv("REDIS_HOST", "localhost")
-            redis_port = os.getenv("REDIS_PORT", "6379")
-            redis_url = f"redis://{redis_host}:{redis_port}/0"
-
-        # Use synchronous Redis client for Celery tasks
-        return redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
-    except Exception as e:
-        logger.warning(f"Failed to connect to Redis: {e}")
-        return None
 
 
 def update_job_status(
@@ -55,6 +42,11 @@ def update_job_status(
     This function writes to Redis independently of Celery's update_state(),
     ensuring that the frontend can poll for real-time progress updates.
 
+    Uses the new redis_client module with:
+    - Exponential backoff retry (max 3 attempts)
+    - Connection pooling
+    - Socket timeouts
+
     Args:
         job_id: Unique job identifier
         status: Job status (processing | completed | failed | pending)
@@ -62,15 +54,11 @@ def update_job_status(
         current_step: Human-readable current step description
         error: Error message (if failed)
     """
-    redis_client = get_redis_client()
-    if not redis_client:
-        logger.warning(f"[{job_id}] Redis not available, cannot update job status")
-        return
+    job_status_key = f"job:{job_id}:state"
 
-    try:
-        job_status_key = f"job:{job_id}:state"
-
-        redis_client.hset(
+    def _update_status(client):
+        """Inner function to execute with retry logic"""
+        client.hset(
             job_status_key,
             mapping={
                 "status": status,
@@ -79,14 +67,19 @@ def update_job_status(
                 "error": error,
             }
         )
-
         # Set 24h TTL on the status key
-        redis_client.expire(job_status_key, 86400)
+        client.expire(job_status_key, 86400)
+        return True
 
+    result = execute_redis_operation(
+        _update_status,
+        f"update_job_status({job_id})"
+    )
+
+    if result:
         logger.debug(f"[{job_id}] Updated Redis status: {status} ({progress}%) - {current_step}")
-
-    except Exception as e:
-        logger.warning(f"[{job_id}] Failed to update status in Redis: {e}")
+    else:
+        logger.warning(f"[{job_id}] Redis not available, cannot update job status")
 
 
 @celery_app.task(bind=True, name="tasks.analyze_video")
@@ -174,7 +167,7 @@ def analyze_video_task(self, job_id: str, video_path: str) -> Dict:
         update_job_status(job_id, "processing", 30, "Computing perceptual hashes (pHash)...")
 
         # Analyze frames: compute hashes, cluster, select representatives
-        representatives = hash_analyzer.analyze(frame_paths)
+        representatives, frame_mapping = hash_analyzer.analyze(frame_paths)
 
         step_times["hashing_clustering"] = time.time() - step_start
         logger.info(
@@ -247,23 +240,29 @@ def analyze_video_task(self, job_id: str, video_path: str) -> Dict:
         # Prepare result
         result = {
             "clusters": clusters,
+            "frame_mapping": frame_mapping,
         }
 
         # Store in Redis
         # Update final status to "completed"
         update_job_status(job_id, "completed", 100, "Analysis completed successfully")
 
-        # Store result data
-        redis_client = get_redis_client()
-        if redis_client:
-            try:
-                result_key = f"job:{job_id}:result"
-                redis_client.setex(result_key, 86400, json.dumps(result))  # 24h TTL
+        # Store result data with retry logic
+        result_key = f"job:{job_id}:result"
+        result_json = json.dumps(result)
 
-                logger.info(f"[{job_id}] Results stored in Redis")
-            except Exception as redis_error:
-                logger.warning(f"[{job_id}] Failed to store result in Redis: {redis_error}")
-                # Continue anyway - results are saved to filesystem
+        def _store_result(client):
+            """Store analysis result with 24h TTL"""
+            client.setex(result_key, 86400, result_json)
+            return True
+
+        store_result = execute_redis_operation(
+            _store_result,
+            f"store_result({job_id})"
+        )
+
+        if store_result:
+            logger.info(f"[{job_id}] Results stored in Redis")
         else:
             logger.warning(f"[{job_id}] Redis not available, skipping result storage")
 

@@ -81,7 +81,7 @@ class HashAnalyzer:
     def cluster_frames(
         self,
         frame_hashes: Dict[Path, imagehash.ImageHash]
-    ) -> List[List[Path]]:
+    ) -> Tuple[List[List[Path]], Dict[int, int]]:
         """
         Cluster frames based on perceptual hash similarity
 
@@ -92,25 +92,23 @@ class HashAnalyzer:
             frame_hashes: Dictionary mapping frame paths to their hashes
 
         Returns:
-            List of clusters, where each cluster is a list of frame paths
-
-        Algorithm:
-            1. Sort frames by hash value for consistency
-            2. For each frame, check if it's similar to any existing cluster representative
-            3. If similar, add to that cluster; otherwise, create new cluster
+            Tuple containing:
+            - List of clusters, where each cluster is a list of frame paths
+            - Dictionary mapping frame index (0-based, sorted by filename) to cluster ID
         """
         if not frame_hashes:
-            return []
+            return [], {}
 
-        # Sort frames by name for consistent ordering
+        # Sort frames by name for consistent ordering (assumes frame_XXXX.png format)
         sorted_frames = sorted(frame_hashes.items(), key=lambda x: x[0].name)
 
         clusters: List[List[Path]] = []
         cluster_representatives: List[imagehash.ImageHash] = []
+        frame_mapping: Dict[int, int] = {}
 
         logger.info(f"Clustering {len(sorted_frames)} frames (threshold={self.hamming_threshold})")
 
-        for frame_path, frame_hash in sorted_frames:
+        for frame_idx, (frame_path, frame_hash) in enumerate(sorted_frames):
             # Find closest cluster
             min_distance = float('inf')
             closest_cluster_idx = -1
@@ -124,17 +122,20 @@ class HashAnalyzer:
             # Add to existing cluster or create new one
             if min_distance <= self.hamming_threshold:
                 clusters[closest_cluster_idx].append(frame_path)
+                frame_mapping[frame_idx] = closest_cluster_idx
             else:
                 # Create new cluster
+                new_cluster_idx = len(clusters)
                 clusters.append([frame_path])
                 cluster_representatives.append(frame_hash)
+                frame_mapping[frame_idx] = new_cluster_idx
 
         logger.info(
             f"Created {len(clusters)} clusters from {len(sorted_frames)} frames "
             f"(avg {len(sorted_frames) / len(clusters):.1f} frames/cluster)"
         )
 
-        return clusters
+        return clusters, frame_mapping
 
     def select_representatives(
         self,
@@ -169,7 +170,7 @@ class HashAnalyzer:
         logger.info(f"Selected {len(representatives)} cluster representatives")
         return representatives
 
-    def analyze(self, frame_paths: List[Path]) -> List[Tuple[int, Path, int]]:
+    def analyze(self, frame_paths: List[Path]) -> Tuple[List[Tuple[int, Path, int]], Dict[int, int]]:
         """
         Full analysis pipeline: compute hashes, cluster, select representatives
 
@@ -177,7 +178,9 @@ class HashAnalyzer:
             frame_paths: List of paths to frame image files
 
         Returns:
-            List of (cluster_id, representative_path, cluster_size) tuples
+            Tuple containing:
+            - List of (cluster_id, representative_path, cluster_size) tuples
+            - Dictionary mapping frame index to cluster ID
 
         Raises:
             RuntimeError: If analysis fails
@@ -189,12 +192,12 @@ class HashAnalyzer:
         frame_hashes = self.compute_hashes(frame_paths)
 
         # Step 2: Cluster frames by hash similarity
-        clusters = self.cluster_frames(frame_hashes)
+        clusters, frame_mapping = self.cluster_frames(frame_hashes)
 
         # Step 3: Select representative from each cluster
         representatives = self.select_representatives(clusters)
 
-        return representatives
+        return representatives, frame_mapping
 
 
 # Create singleton instance with environment-configured hamming threshold

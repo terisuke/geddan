@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
 import {
-  PoseLandmarker,
   FilesetResolver,
+  PoseLandmarker,
   type PoseLandmarkerResult,
 } from '@mediapipe/tasks-vision';
+import { useEffect, useRef, useState } from 'react';
 
 interface UseMediaPipeOptions {
   onResults: (results: PoseLandmarkerResult) => void;
@@ -14,13 +14,13 @@ interface UseMediaPipeOptions {
 }
 
 export function useMediaPipe(
-  videoRef: React.RefObject<HTMLVideoElement>,
+  videoRef: React.RefObject<HTMLVideoElement | null>,
   options: UseMediaPipeOptions
 ) {
   const landmarkerRef = useRef<PoseLandmarker | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const animationFrameId = useRef<number>();
+  const animationFrameId = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     let isMounted = true;

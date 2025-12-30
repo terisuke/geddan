@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 # Import routers
-from app.routers import upload, analyze
+from app.routers import upload, analyze, generate
 
 # Base directory: absolute path to packages/backend
 # This ensures paths are independent of uvicorn's working directory
@@ -115,6 +115,7 @@ app.add_middleware(
 # Include routers
 app.include_router(upload.router)
 app.include_router(analyze.router)
+app.include_router(generate.router)
 
 # Mount static files for outputs (thumbnails)
 # This allows serving files from /outputs/{job_id}/thumbnails/ via /outputs/...

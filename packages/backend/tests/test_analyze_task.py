@@ -82,7 +82,7 @@ class TestHashAnalyzer:
         hashes = analyzer.compute_hashes(sample_images)
 
         # Cluster frames
-        clusters = analyzer.cluster_frames(hashes)
+        clusters, frame_mapping = analyzer.cluster_frames(hashes)
 
         # Should have 2 clusters (red and blue)
         assert len(clusters) >= 1  # At least one cluster
@@ -94,7 +94,7 @@ class TestHashAnalyzer:
 
         # Compute hashes and cluster
         hashes = analyzer.compute_hashes(sample_images)
-        clusters = analyzer.cluster_frames(hashes)
+        clusters, frame_mapping = analyzer.cluster_frames(hashes)
 
         # Select representatives
         representatives = analyzer.select_representatives(clusters)
@@ -112,7 +112,7 @@ class TestHashAnalyzer:
         """Test full analysis pipeline"""
         analyzer = HashAnalyzer(hash_size=8, hamming_threshold=5)
 
-        representatives = analyzer.analyze(sample_images)
+        representatives, frame_mapping = analyzer.analyze(sample_images)
 
         assert len(representatives) > 0
         assert len(representatives) <= len(sample_images)
@@ -182,7 +182,7 @@ class TestAnalysisPipeline:
 
         # Run hash analyzer
         analyzer = HashAnalyzer(hash_size=8, hamming_threshold=5)
-        representatives = analyzer.analyze(frame_paths)
+        representatives, frame_mapping = analyzer.analyze(frame_paths)
 
         # Generate thumbnails
         thumbnails_dir = job_dir / "thumbnails"
@@ -202,7 +202,7 @@ class TestAnalysisPipeline:
         frame_paths = sorted(frames_dir.glob("frame_*.jpg"))
 
         analyzer = HashAnalyzer(hash_size=8, hamming_threshold=5)
-        representatives = analyzer.analyze(frame_paths)
+        representatives, frame_mapping = analyzer.analyze(frame_paths)
 
         # Build result structure (same as in analyze_video_task)
         clusters = []

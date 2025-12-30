@@ -24,7 +24,7 @@ export default function GeneratePage() {
       return;
     }
 
-    let pollingInterval: NodeJS.Timeout;
+    let pollingInterval: NodeJS.Timeout | null = null;
     let isMounted = true;
 
     const pollStatus = async () => {

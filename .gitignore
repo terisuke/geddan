@@ -66,3 +66,11 @@ test-results/
 tmp/
 temp/
 dump.rdb
+
+# Claude Code
+.claude/
+.claude-code-harness/
+.claude-code-harness-version
+
+# Reference documents
+references/

@@ -1,9 +1,8 @@
-'use client';
-
-import { useRouter } from 'next/navigation';
-import { useAppStore } from '@/store/useAppStore';
 import { ThumbnailGrid } from '@/components/review/ThumbnailGrid';
-import { generateVideo } from '@/lib/api';
+import { useCaptureProcessor } from '@/hooks/useCaptureProcessor';
+import { useAppStore } from '@/store/useAppStore';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
 
 export default function ReviewPage() {
   const router = useRouter();
@@ -12,102 +11,101 @@ export default function ReviewPage() {
     capturedImages,
     jobId,
     goToCapture,
-    setStatus,
-    setGenerationId,
+    isRemovingBackground,
+    removalProgress,
   } = useAppStore();
+
+  const { processAndUploadCaptures, isProcessing: isUploading, error: uploadError } = useCaptureProcessor();
+
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState({ state: '', percent: 0 });
 
   const handleRetake = (index: number) => {
     goToCapture(index);
     router.push('/capture');
   };
 
-  const handleGenerate = async () => {
-    if (!jobId) {
-      alert('ジョブIDがありません');
+  const startGeneration = async () => {
+    if (!jobId) return;
+
+    // 1. Process & Upload
+    const success = await processAndUploadCaptures();
+    if (!success) {
+      alert(uploadError || "Failed to process images");
       return;
     }
 
-    // 未撮影ポーズがあるかチェック
-    const missingPoses = uniqueFrames
-      .map((_, index) => index)
-      .filter((index) => !capturedImages[index]);
-
-    if (missingPoses.length > 0) {
-      const confirm = window.confirm(
-        `${missingPoses.length}個のポーズが未撮影です。このまま生成しますか？`
-      );
-      if (!confirm) return;
-    }
-
+    // 2. Trigger Generation
     try {
-      setStatus('generating');
-
-      // 撮影画像をBase64に変換
-      const capturedFrames = await Promise.all(
-        Object.entries(capturedImages).map(async ([indexStr, blob]) => {
-          const index = parseInt(indexStr, 10);
-          const base64 = await blobToBase64(blob);
-          return {
-            unique_frame_id: index,
-            image: base64,
-          };
-        })
-      );
-
-      const response = await generateVideo({
-        job_id: jobId,
-        captured_frames: capturedFrames,
+      setIsGenerating(true);
+      const res = await fetch(`http://localhost:8000/api/generate/${jobId}/start`, {
+        method: 'POST'
       });
+      if (!res.ok) throw new Error("Failed to start generation");
 
-      setGenerationId(response.generation_id);
-      router.push(`/generate?generationId=${response.generation_id}`);
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : '動画生成に失敗しました';
-      alert(errorMessage);
-      setStatus('ready');
-    }
-  };
+      // 3. Poll
+      const pollInterval = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`http://localhost:8000/api/generate/${jobId}/status`);
+          const statusData = await statusRes.json();
 
-  const blobToBase64 = (blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result);
-        } else {
-          reject(new Error('Failed to convert blob to base64'));
+          setGenerationProgress({
+            state: statusData.status,
+            percent: parseInt(statusData.progress || '0')
+          });
+
+          if (statusData.status === 'completed') {
+            clearInterval(pollInterval);
+            const videoUrl = `http://localhost:8000${statusData.result_url}`;
+            window.open(videoUrl, '_blank');
+            setIsGenerating(false);
+          } else if (statusData.status === 'failed') {
+            clearInterval(pollInterval);
+            alert("Generation failed: " + statusData.message);
+            setIsGenerating(false);
+          }
+        } catch (e) {
+          console.error("Polling error", e);
         }
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
+      }, 1000);
+
+    } catch (e) {
+      alert("Generation initialization failed");
+      setIsGenerating(false);
+    }
   };
 
   if (uniqueFrames.length === 0) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center">
-        <p className="text-gray-600">データを読み込み中...</p>
+      <div className="min-h-screen bg-black text-white flex items-center justify-center">
+        <p>Loading data...</p>
       </div>
     );
   }
 
-  const capturedCount = Object.keys(capturedImages).length;
-  const totalCount = uniqueFrames.length;
-  const missingCount = totalCount - capturedCount;
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 py-12 px-4">
+    <div className="min-h-screen bg-black text-white p-8">
       <div className="max-w-6xl mx-auto">
-        <h1 className="text-4xl font-bold text-center mb-4 text-gray-800">
-          撮影完了！確認してね 📸
-        </h1>
+        <h1 className="text-3xl font-bold text-center mb-8">Review Captures</h1>
 
-        {missingCount > 0 && (
-          <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-            <p className="text-yellow-800 text-sm">
-              ⚠️ {missingCount}個のポーズが未撮影です。未撮影のポーズは元の画像が使用されます。
-            </p>
+        {/* Status Overlay */}
+        {(isRemovingBackground || isGenerating) && (
+          <div className="fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center">
+            <div className="w-64">
+              <div className="mb-2 flex justify-between text-sm">
+                <span>{isRemovingBackground ? "Removing Backgrounds..." : "Generating Video..."}</span>
+                <span>{isRemovingBackground ? removalProgress : generationProgress.percent}%</span>
+              </div>
+              <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 transition-all duration-300"
+                  style={{ width: `${isRemovingBackground ? removalProgress : generationProgress.percent}%` }}
+                />
+              </div>
+              <p className="mt-4 text-center text-gray-400 text-sm">
+                {isGenerating && generationProgress.state !== 'processing' && generationProgress.state}
+              </p>
+            </div>
           </div>
         )}
 
@@ -119,19 +117,20 @@ export default function ReviewPage() {
           />
         </div>
 
-        {/* アクションボタン */}
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between">
           <button
-            onClick={() => router.back()}
-            className="px-6 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+            onClick={() => router.push('/capture')}
+            className="px-6 py-3 bg-gray-800 rounded hover:bg-gray-700"
           >
-            ← 戻る
+            Back to Capture
           </button>
+
           <button
-            onClick={handleGenerate}
-            className="px-8 py-4 bg-gradient-to-r from-purple-600 to-blue-600 text-white text-xl font-semibold rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-105"
+            onClick={startGeneration}
+            disabled={isRemovingBackground || isGenerating}
+            className="px-8 py-3 bg-blue-600 rounded font-bold hover:bg-blue-500 disabled:opacity-50"
           >
-            動画を生成! 🎬
+            Create Video 🎬
           </button>
         </div>
       </div>

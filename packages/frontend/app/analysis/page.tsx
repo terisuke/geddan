@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { getAnalysisStatus } from '@/lib/api';
 import { useAppStore } from '@/store/useAppStore';
+import { useErrorHandler } from '@/hooks/useErrorHandler';
 import { ProgressBar } from '@/components/analysis/ProgressBar';
 import { AnalysisThumbnailGrid } from '@/components/analysis/AnalysisThumbnailGrid';
 import { API_BASE_URL } from '@/lib/api/config';
@@ -41,11 +42,14 @@ export default function AnalysisPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const jobId = searchParams.get('jobId');
-  
+
   const { setStatus, setProgress, setCurrentStep, setUniqueFrames, setFrameMapping } = useAppStore();
+  const { handleError, showWarning, showSuccess } = useErrorHandler();
   const [error, setError] = useState<string | null>(null);
   const [isBackendNotConfigured, setIsBackendNotConfigured] = useState(false);
   const [completedClusters, setCompletedClusters] = useState<ClusterInfo[] | null>(null);
+  // 将来的にリトライ表示UIで使用
+  // const [isRetrying, setIsRetrying] = useState(false);
   const retryCountRef = useRef(0);
 
   useEffect(() => {
@@ -62,7 +66,9 @@ export default function AnalysisPage() {
         // リトライ回数の上限チェック
         if (retryCountRef.current >= MAX_RETRY_COUNT) {
           if (!isMounted) return;
-          setError('解析タイムアウト: 最大待機時間（5分）を超えました。もう一度試してください。');
+          const timeoutError = '解析タイムアウト: 最大待機時間（5分）を超えました。もう一度試してください。';
+          setError(timeoutError);
+          showWarning('解析タイムアウト', '最大待機時間を超えました');
           setStatus('idle');
           if (pollingInterval) {
             clearInterval(pollingInterval);
@@ -70,10 +76,15 @@ export default function AnalysisPage() {
           return;
         }
 
-        const response = await getAnalysisStatus(jobId);
-        
-        if (!isMounted) return;
+        const response = await getAnalysisStatus(jobId, (attempt, delay) => {
+          // リトライ中の通知
+          showWarning(
+            `接続をリトライ中... (${attempt}回目)`,
+            `${Math.round(delay / 1000)}秒後に再試行します`
+          );
+        });
 
+        if (!isMounted) return;
         retryCountRef.current += 1;
 
         // バックエンド未実装/未設定の検知
@@ -119,14 +130,16 @@ export default function AnalysisPage() {
             setUniqueFrames(convertedFrames);
             setFrameMapping({}); // クラスタ形式ではframe_mappingは不要
             setStatus('ready');
-            
+            showSuccess('解析完了', `${clusters.length}個のユニークなポーズを検出しました`);
+
             // 自動遷移を削除: サムネイル表示ビューに切り替える
           } else if (response.unique_frames && response.frame_mapping) {
             // 後方互換性のため、旧形式もサポート
             setUniqueFrames(response.unique_frames);
             setFrameMapping(response.frame_mapping);
             setStatus('ready');
-            
+            showSuccess('解析完了', 'ポーズの検出が完了しました');
+
             // 旧形式の場合も自動遷移を削除
             // ただし、旧形式ではクラスタ情報がないため、ユーザーに確認を求めるか、直接遷移する
             // ここでは旧形式の場合は直接遷移（後方互換性）
@@ -139,7 +152,9 @@ export default function AnalysisPage() {
             setError('解析結果が不完全です（クラスタ情報またはフレーム情報がありません）');
           }
         } else if (response.status === 'failed') {
-          setError(response.error || '解析に失敗しました');
+          const failedMessage = response.error || '解析に失敗しました';
+          setError(failedMessage);
+          handleError({ code: 'SERVER_ERROR', message: failedMessage, userMessage: failedMessage, severity: 'error', retryable: true, timestamp: Date.now(), id: `analysis_${Date.now()}` }, true);
           setStatus('idle');
           // ポーリングを停止
           if (pollingInterval) {
@@ -155,11 +170,15 @@ export default function AnalysisPage() {
         }
       } catch (err) {
         if (!isMounted) return;
-        
-        const errorMessage =
-          err instanceof Error ? err.message : 'ステータス取得に失敗しました';
-        setError(errorMessage);
+
+        // エラーハンドラでToast通知も表示される
+        const appError = handleError(err);
+        setError(appError.userMessage);
         setStatus('idle');
+        // ポーリングを停止
+        if (pollingInterval) {
+          clearInterval(pollingInterval);
+        }
       }
     };
 
@@ -175,7 +194,7 @@ export default function AnalysisPage() {
         clearInterval(pollingInterval);
       }
     };
-  }, [jobId, router, setStatus, setProgress, setCurrentStep, setUniqueFrames, setFrameMapping]);
+  }, [jobId, router, setStatus, setProgress, setCurrentStep, setUniqueFrames, setFrameMapping, handleError, showWarning, showSuccess]);
 
   const { progress, currentStep } = useAppStore();
 

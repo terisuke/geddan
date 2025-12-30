@@ -1,54 +1,122 @@
-# Repository Guidelines
+# AGENTS.md - DanceFrame 開発ワークフロー
 
-Concise reference for contributing to DanceFrame. Keep PRs small, include tests, and echo the patterns already in the codebase. 現在の最優先マイルストーンは「アップロード→フレーム抽出→pHashクラスタ→サムネ表示」をローカルで完走させること。
+> **プロジェクト**: DanceFrame (geddan)
+> **モード**: Solo (Claude Code)
+> **更新日時**: 2025-12-30
 
-## Project Structure & Module Organization
-- `packages/frontend`: Next.js 16 + React 19 UI. Core code under `app/` (routes), `components/`, `hooks/`, `lib/`, `store/`, `types/`; static assets in `public/`.
-- `packages/backend`: FastAPI entrypoint `app/main.py`, with Redis/Celery hooks planned and upload/output dirs created at startup.
-- `docs/`: Architecture, workflow, and setup references; read `SETUP.md` before environment changes.
-- `docker-compose.yml`: Spins up app services (frontend/backends/Redis) for parity with local dev.
+---
 
-## Build, Test, and Development Commands
+## 📋 概要
+
+DanceFrame は AI パワードのインタラクティブ動画生成アプリです。
+手描きループアニメーションからキーフレームを抽出し、ユーザーがポーズを真似て撮影することで「踊ってみた」動画を作成します。
+
+**コアフロー**: 動画アップロード → AI解析（ポーズ検出） → リアルタイムカメラマッチング → 自動動画合成
+
+---
+
+## 🏗️ プロジェクト構造
+
+```
+packages/
+├── frontend/             # Next.js 16 + React 19.2 (SPA)
+│   ├── app/             # App Router pages
+│   ├── components/      # React components
+│   ├── hooks/           # Custom hooks (useMediaPipe, useCamera)
+│   ├── lib/             # Utilities (API client, pose comparison)
+│   ├── store/           # Zustand state (useAppStore)
+│   └── types/           # TypeScript definitions
+└── backend/             # FastAPI + Celery (Async API)
+    ├── app/
+    │   ├── routers/     # API endpoints
+    │   ├── services/    # Business logic
+    │   ├── tasks/       # Celery tasks
+    │   └── models/      # Pydantic schemas
+    ├── tests/           # pytest tests
+    ├── uploads/         # Temporary file storage
+    └── outputs/         # Generated outputs
+```
+
+---
+
+## 🚀 開発コマンド
+
+### mise (推奨)
+
+```bash
+mise run frontend:dev     # Next.js dev server (port 3000)
+mise run backend:serve    # FastAPI dev server (port 8000)
+mise run frontend:test    # Playwright E2E tests
+mise run backend:test     # pytest with coverage
+mise run clean            # Clean uploads/outputs
+```
+
+### マニュアル
+
 ```bash
 # Frontend
-cd packages/frontend
-npm run dev          # Next.js dev server on :3000
-npm run build        # Production build
-npm run lint         # ESLint (core-web-vitals rules)
-npm run test:e2e     # Playwright E2E specs in __tests__/e2e
+cd packages/frontend && npm run dev
 
 # Backend
 cd packages/backend
-uvicorn app.main:app --reload --port 8000
-pytest               # Python tests (asyncio ready)
-pytest --cov=app tests/  # Coverage when needed
-
-# Using mise (recommended)
-mise run frontend:install
-mise run frontend:dev
-mise run frontend:test
-mise run backend:install
-mise run backend:serve
-mise run backend:test
+source venv/bin/activate
+DEBUG=true REDIS_OPTIONAL=true uvicorn app.main:app --reload --port 8000
 ```
 
-## Current Milestone
-- 目標: アップロード→フレーム抽出→pHashクラスタ→サムネ表示（ローカル完走）
-- Backend: Celery/Redisで解析ジョブ実行、`/api/analyze/{job_id}`でクラスタ+サムネURL返却
-- Frontend: 解析進捗ポーリングし完了時にクラスタ代表サムネをグリッド表示。404/501/503時はモックにフォールバックしつつ「未実装」表示。
+---
 
-## Coding Style & Naming Conventions
-- Frontend: TypeScript, 2-space indent, prefer functional components. PascalCase for components, camelCase for utils, `use*` for hooks. Keep server components lean; isolate browser-only logic with `"use client"`. Lint with `npm run lint` before pushing.
-- Backend: Python 3.11, format with `black`, lint with `flake8`. snake_case for functions/vars, PascalCase for Pydantic models. Keep request/response models in `app/models`, side effects behind service functions.
+## 📐 コーディング規約
 
-## Testing Guidelines
-- Frontend E2E: Playwright specs live in `packages/frontend/__tests__/e2e/*.spec.ts`; prefer data-testid selectors and deterministic fixtures. Run against the dev server; avoid network flakiness by mocking APIs when possible.
-- Backend: Tests belong under `packages/backend/tests/` using `pytest` naming (`test_*.py`). Use `pytest-asyncio` for async routes; add regression tests when touching logic.
+### Frontend (TypeScript)
 
-## Commit & Pull Request Guidelines
-- Branches: `feature/<owner>/<topic>` from `develop` when available.
-- Commits: Conventional format `type(scope): subject` (e.g., `feat(frontend): add capture HUD`, `fix(backend): handle redis downtime`, `docs: update quickstart`).
-- PRs: Link issues, describe behavior changes, list test commands run, and attach screenshots for UI tweaks. Keep scope narrow and ensure lint/tests pass before requesting review.
+- 2スペースインデント
+- 関数コンポーネント優先
+- PascalCase: コンポーネント
+- camelCase: ユーティリティ
+- `use*`: カスタムフック
+- ESLint でチェック: `npm run lint`
 
-## Security & Configuration Tips
-- Copy `.env.example` files; never commit secrets. Ensure local Redis is reachable when exercising upload/processing flows. Clean temporary `uploads/` and `outputs/` directories after debugging to avoid large diffs.
+### Backend (Python)
+
+- Black でフォーマット
+- Flake8 でリント
+- snake_case: 関数・変数
+- PascalCase: Pydantic モデル
+
+---
+
+## 🧪 テストガイドライン
+
+- **Frontend E2E**: `packages/frontend/__tests__/e2e/*.spec.ts`
+- **Backend**: `packages/backend/tests/test_*.py`
+- data-testid セレクタを優先
+- API モックを活用してフレーク回避
+
+---
+
+## 📦 コミット規約
+
+```
+<type>(<scope>): <subject>
+
+Types: feat, fix, docs, style, refactor, test, chore
+Example: feat(frontend): add capture HUD
+```
+
+---
+
+## 🔧 現在のマイルストーン
+
+**目標**: アップロード → フレーム抽出 → pHashクラスタ → サムネ表示
+
+詳細は `Plans.md` を参照。
+
+---
+
+## 📚 ドキュメント参照
+
+- `README.md` - クイックスタート
+- `CLAUDE.md` - Claude Code 設定
+- `Plans.md` - タスク管理
+- `docs/SPECIFICATION_V2.md` - 技術仕様
+- `docs/ARCHITECTURE.md` - アーキテクチャ

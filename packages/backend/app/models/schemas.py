@@ -3,7 +3,7 @@ Pydantic schemas for request/response models
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime, timezone
 
 
@@ -67,6 +67,7 @@ class AnalysisResult(BaseModel):
     """Analysis result model containing cluster information"""
 
     clusters: List[ClusterInfo] = Field(default_factory=list, description="List of clusters with representative thumbnails")
+    frame_mapping: Dict[int, int] = Field(default_factory=dict, description="Mapping from frame index to cluster ID")
 
     class Config:
         json_schema_extra = {
