@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const WAIT_SECONDS = 10;
 const COUNTDOWN_SECONDS = 5;
-const SIMILARITY_THRESHOLD = 70;
+const SIMILARITY_THRESHOLD = 55; // Lowered from 70% - anime poses are harder to match exactly
 
 // ターゲットポーズのランドマーク抽出結果をキャッシュ
 type LandmarkCache = Map<string, ExtractedPose | null>;
@@ -185,10 +185,32 @@ export default function CapturePage() {
   // - ターゲットランドマークの抽出が完了（成功・失敗問わず）
   const isFullyReady = isCameraReady && !isExtractingLandmarks;
 
+  // Track if we've started timing for the current pose (prevents auto-capture on first render)
+  const hasStartedTimingRef = useRef(false);
+
+  // Reset timing flag when pose changes
+  useEffect(() => {
+    hasStartedTimingRef.current = false;
+  }, [currentPoseIndex]);
+
+  // Start timing only after isFullyReady becomes true (not on initial render)
+  useEffect(() => {
+    if (isFullyReady && !hasStartedTimingRef.current) {
+      // Small delay to ensure state is stable before starting timer
+      const timeout = setTimeout(() => {
+        hasStartedTimingRef.current = true;
+        setTimeLeft(WAIT_SECONDS);
+        setCountdown(null);
+        setSimilarity(0);
+      }, 500); // 500ms grace period after ready
+      return () => clearTimeout(timeout);
+    }
+  }, [isFullyReady]);
+
   // Main Timer Logic
   useEffect(() => {
-    // 準備が完了するまでタイマーを開始しない
-    if (isPaused || isCapturing || !isFullyReady) return;
+    // 準備が完了するまで、またはタイミングが開始されるまでタイマーを開始しない
+    if (isPaused || isCapturing || !isFullyReady || !hasStartedTimingRef.current) return;
 
     const timer = setInterval(() => {
       // 1. Initial 10s wait period
@@ -217,8 +239,9 @@ export default function CapturePage() {
 
   // Auto-Shutter Logic - disabled linting as intentional async state update
   useEffect(() => {
-    // 準備が完了していない場合は自動シャッターを無効化
-    if (isPaused || isCapturing || countdown !== null || !isFullyReady) return;
+    // 準備が完了していない、またはタイミングが開始されていない場合は自動シャッターを無効化
+    // hasStartedTimingRef.current ensures we don't trigger on first render
+    if (isPaused || isCapturing || countdown !== null || !isFullyReady || !hasStartedTimingRef.current) return;
 
     if (similarity >= SIMILARITY_THRESHOLD) {
       // Intentional: triggerCapture is a user-initiated action triggered by similarity reaching threshold
